@@ -1,19 +1,17 @@
-from fastapi import FastAPI, Form,File, UploadFile, HTTPException,Query
-from sqlalchemy import create_engine, Column, Integer, Float, String, Text,LargeBinary,ForeignKey
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker,relationship
+from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, Query, Form
+from sqlalchemy import create_engine, Column, Integer, String, LargeBinary, Float, Text, ForeignKey
+from sqlalchemy.orm import declarative_base, sessionmaker, Session, relationship
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from google.cloud import vision
-from PIL import ImageFont, ImageDraw, Image
+from PIL import Image, ImageFont, ImageDraw
+from datetime import datetime
+from pytz import timezone
 from typing import List
+
+import base64
 import requests
 import json
-from datetime import datetime
-import hmac
-import hashlib
-from pytz import timezone
-
 import asyncio
 import numpy as np
 import os
@@ -23,6 +21,8 @@ import platform
 import re
 import cv2
 import shutil
+import hmac
+import hashlib
 
 DATABASE_URL = "sqlite:///./test.db"
 engine = create_engine(DATABASE_URL)
@@ -34,14 +34,14 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 #권장섭취량 
 class Recommended_Intake(Base):
-     __tablename__ = "recommended_intake"
-     id = Column(Integer, primary_key=True, index=True)
-     recommended_cal = Column(Float)
-     recommended_nat = Column(Float)
-     recommended_carbs = Column(Float)
-     recommended_protein = Column(Float)
-     recommended_fat = Column(Float)
-     recommended__potassium = Column(Float)
+    __tablename__ = "recommended_intake"
+    id = Column(Integer, primary_key=True, index=True)
+    recommended_cal = Column(Float)
+    recommended_nat = Column(Float)
+    recommended_carbs = Column(Float)
+    recommended_protein = Column(Float)
+    recommended_fat = Column(Float)
+    recommended__potassium = Column(Float)
     
 
 
@@ -68,6 +68,7 @@ class TextImageInfo(Base):
     text_carbs = Column(String)
     text_protein = Column(String)
     text_fat = Column(String)
+    text_image_data = Column(LargeBinary)
 Base.metadata.create_all(bind=engine)
 
 #음식 *먹은양 통합 데이터베이스
@@ -95,7 +96,7 @@ class FoodImageInfo(Base):
     food_protein = Column(Float)
     food_fat = Column(Float)
     food_potassium = Column(Float)
-    
+    food_image_data = Column(LargeBinary)
 
 
 
@@ -118,7 +119,7 @@ class UserJoin(Base):
     ##time_infos = relationship("TimeInfo", back_populates="user")
     ##all_food_infos = relationship("AllFoodInfo", back_populates="user")
     ##nutrition_infos = relationship("NutritionInfo", back_populates="user")
-   ## text_infos = relationship("TextInfo", back_populates="user")
+    ## text_infos = relationship("TextInfo", back_populates="user")
     ##textimage_infos = relationship("TextimageInfo", back_populates="user")
     ##food_infos = relationship("FoodInfo", back_populates="user")
     ##foodimage_infos = relationship("FoodimageInfo", back_populates="user")
@@ -337,10 +338,83 @@ async def fetch_nutrition_info():
 
 #         return JSONResponse(content={"error": error_message}, status_code=500)
     
+
+
+# OCR get
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+@app.get("/get_image_and_ocr_result")
+async def get_image_and_ocr_result(db: Session = Depends(get_db)):
+    # 가장 최근에 저장된 레코드 조회
+    latest_record = db.query(TextImageInfo).order_by(TextImageInfo.id.desc()).first()
+
+    if latest_record:
+        # 이미지 데이터를 base64로 인코딩
+        image_base64 = base64.b64encode(latest_record.image_data).decode("utf-8")
+
+        # OCR 결과 구성 (실제 OCR 결과는 어떻게 저장되어 있는지에 따라 달라질 수 있음)
+        ocr_result = {
+            "text_name": latest_record.text_name,
+            "text_cal": latest_record.text_cal,
+            "text_nat": latest_record.text_nat,
+            "text_carbs": latest_record.text_carbs,
+            "text_protein": latest_record.text_protein,
+            "text_fat": latest_record.text_fat,
+        }
+
+        return {"image_base64": image_base64, "ocr_result": ocr_result}
+    else:
+        return {"message": "No image and OCR result available."}
+
+#OCR 이미지와 정보값 post
+@app.post("/process_OCR_image")
+async def process_image(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    # 파일 저장 위치 설정
+    current_directory = os.path.abspath(os.getcwd())
+    directory = os.path.join(current_directory, "temp_images")
+
+    # 디렉토리가 존재하지 않으면 생성
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+
+    # 파일 저장 위치 설정
+    file_location = os.path.join(directory, file.filename)
+    with open(file_location, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    # OCR 처리 함수 비동기적으로 호출
+    ocr_result = await asyncio.to_thread(process_ocr, file_location, flag="")
+
+    # OCR 결과에서 영양 정보 추출
+    nutrition_info = process_nutrition_info(ocr_result)
+
+    # 이미지 데이터를 데이터베이스에 추가
+    with open(file_location, "rb") as image_file:
+        image_data = image_file.read()
+        image_record = TextImageInfo(
+            text_name="",  # OCR 결과에서 추출한 식품명이 있다면 여기에 할당
+            text_cal="",   # OCR 결과에서 추출한 칼로리 정보가 있다면 여기에 할당
+            text_nat=nutrition_info.get("나트륨", "Unknown"),
+            text_carbs=nutrition_info.get("탄수화물", "Unknown"),
+            text_protein=nutrition_info.get("단백질", "Unknown"),
+            text_fat=nutrition_info.get("지방", "Unknown"),
+            image_data=image_data
+        )
+        db.add(image_record)
+        db.commit()
+
+    return {"message": "Image and OCR data processed successfully"}
+
+
 @app.post("/process_image")
 async def process_image(file: UploadFile = File(...), flag: str = "ALL"):
-   
-   # 현재 시각과 클라이언트 정보를 이용하여 서명 생성
+    
+    # 현재 시각과 클라이언트 정보를 이용하여 서명 생성
     timestamp = datetime.now(timezone("Asia/Seoul")).strftime("%Y%m%d%H%M%S%f")[:-3]
     client_id = "glabs_638c223a818794216d1ba2d03f8f395054565ac1b5bc948c9ff6f392195615be"
     client_secret = "fb66b6fc7ac25cdd55439205994f85b6729c7f400674c3d1acddd007b003c6e4"
@@ -363,7 +437,7 @@ async def process_image(file: UploadFile = File(...), flag: str = "ALL"):
     # 음식 예측 API 호출
     response = requests.post(url, headers=headers, files=obj)
 
-  
+
     if response.ok:
         json_data = json.loads(response.text)
         code = json_data["code"]
@@ -398,7 +472,7 @@ def save_to_database(prediction_top1):
     food_protein = prediction_top1.get("food_protein", 0.0)
     food_fat = prediction_top1.get("food_fat", 0.0)
     food_potassium = prediction_top1.get("food_potassium", 0.0)
-  
+
     #새로운 데이터베이스 세션 생성
     db = SessionLocal()
 
@@ -411,7 +485,6 @@ def save_to_database(prediction_top1):
         food_protein=food_protein,
         food_fat=food_fat,
         food_potassium=food_potassium,
-       
     )
     db.add(db_food_result)
     db.commit()
@@ -524,7 +597,7 @@ async def submit_join(
     if not food_image_info:
         raise HTTPException(status_code=404, detail="음식 정보를 찾을 수 없습니다.")
 
-   # TotalFoodInfo에 저장할 데이터 생성
+    # TotalFoodInfo에 저장할 데이터 생성
     total_food_data = TotalFoodInfo(
         Total_food_name=food_image_info.food_name,
         Total_food_cal=food_image_info.food_cal * amount_eaten,
@@ -561,24 +634,24 @@ async def submit_join(
 #총 섭취량 엔드포인트
 @app.get("/total_food_sum")
 async def total_food_sum():
-     db = SessionLocal()
-     data = db.query(TotalFoodInfo).all()
+    db = SessionLocal()
+    data = db.query(TotalFoodInfo).all()
 
     # 각 항목별 총합을 계산
-     day_sum =  DayTotalSum(
+    day_sum =  DayTotalSum(
         Total_food_cal = sum(food.Total_food_cal for food in data),
-         Total_food_nat= sum(food.Total_food_nat for food in data),
+        Total_food_nat= sum(food.Total_food_nat for food in data),
         Total_food_carbs  = sum(food.Total_food_carbs for food in data),
-         Total_food_protein  = sum(food.Total_food_protein for food in data),
-         Total_food_fat = sum(food.Total_food_fat for food in data),
+        Total_food_protein  = sum(food.Total_food_protein for food in data),
+        Total_food_fat = sum(food.Total_food_fat for food in data),
         Total_food_potassium  = sum(food.Total_food_potassium for food in data),
-     )
-      #TotalFoodInfo에 저장
-     db.add(day_sum)
-     db.commit()
-     db.refresh(day_sum)
+    )
+    #TotalFoodInfo에 저장
+    db.add(day_sum)
+    db.commit()
+    db.refresh(day_sum)
 
-     response_data = {
+    response_data = {
         "message": "Data successfully submitted",
         "total_food_data": {
         
@@ -589,41 +662,40 @@ async def total_food_sum():
             "Total_food_fat": day_sum.Total_food_fat,
             "Total_food_potassium": day_sum.Total_food_potassium,
         },
-      }
+    }
 
-     return response_data
+    return response_data
 
 #권장섭취량
 @app.get("/recommended_intake")
 async def recommended_intake():
-     db = SessionLocal()
-     user_data = db.query(UserJoin).order_by(UserJoin.id.desc()).first()
+    db = SessionLocal()
+    user_data = db.query(UserJoin).order_by(UserJoin.id.desc()).first()
 
-     height = user_data.height / 100
-     age = user_data.age
-     weight = user_data.weight
-     
-     #남자 활동적 식
-     recommended_cal = 662 - (9.53 * age) + 1.25 * (15.91 * weight + 539.6 * height)
+    height = user_data.height / 100
+    age = user_data.age
+    weight = user_data.weight
+    
+    #남자 활동적 식
+    recommended_cal = 662 - (9.53 * age) + 1.25 * (15.91 * weight + 539.6 * height)
 
-     
 
     # 각 항목별 총합을 계산
-     recommended = Recommended_Intake(
-     recommended_cal=recommended_cal,
+    recommended = Recommended_Intake(
+    recommended_cal=recommended_cal,
     recommended_nat=2300,
-      recommended_carbs=recommended_cal*0.65/4,
-      recommended_protein=recommended_cal*0.15/4,
-      recommended_fat=recommended_cal*0.2/9,
-      recommended_potassium=2300,
+    recommended_carbs=recommended_cal*0.65/4,
+    recommended_protein=recommended_cal*0.15/4,
+    recommended_fat=recommended_cal*0.2/9,
+    recommended_potassium=2300,
 )
     
-      #Reocmmended Intake에 저장
-     db.add(recommended)
-     db.commit()
-     db.refresh(recommended)
+    #Reocmmended Intake에 저장
+    db.add(recommended)
+    db.commit()
+    db.refresh(recommended)
 
-     response_data = {
+    response_data = {
         "message": "Data successfully submitted",
         "recommended_intake_data": {
         
@@ -634,9 +706,9 @@ async def recommended_intake():
             "Total_food_fat":  recommended.Total_food_fat,
             "Total_food_potassium":  recommended.Total_food_potassium,
         },
-      }
+    }
 
-     return response_data
+    return response_data
 
 # 텍스트 인식 결과 반환
 @app.get("/fetch_textimage/")
@@ -723,30 +795,6 @@ def process_ocr(file_path, flag):
 
     return json_data
 
-
-def putText(image, text, x, y, color=(0, 255, 0), font_size=22):
-    if type(image) == np.ndarray:
-        color_coverted = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        image = Image.fromarray(color_coverted)
-
-    if platform.system() == 'Darwin':
-        font = r"C:\Users\toong\Documents\카카오톡 받은 파일\AppleGothic.ttf"
-    elif platform.system() == 'Windows':
-        font = r"C:\Users\toong\Documents\카카오톡 받은 파일\GowunBatang-Regular.ttf"
-    else:
-        font = r"C:\Users\toong\Documents\카카오톡 받은 파일\Orbit-Regular.ttf"
-
-    image_font = ImageFont.truetype(font, font_size)
-    font = ImageFont.load_default()
-    draw = ImageDraw.Draw(image)
-
-    draw.text((x, y), text, font=image_font, fill=color)
-
-    numpy_image = np.array(image)
-    opencv_image = cv2.cvtColor(numpy_image, cv2.COLOR_RGB2BGR)
-
-    return opencv_image
-
 def process_nutrition_info(text):
     # '%'를 찾는 정규 표현식 패턴
     pattern2 = r'(\d+)\s*%'
@@ -770,4 +818,3 @@ def process_nutrition_info(text):
 
     return results
 
-     
