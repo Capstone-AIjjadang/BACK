@@ -152,7 +152,7 @@ app = FastAPI()
 origins = ["http://localhost:3000"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -409,6 +409,29 @@ def save_to_database(prediction_top1, image_data):
 
     #데이터 세션 닫기
     db.close()
+
+
+from fastapi.responses import StreamingResponse
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+#음식 인식의 이미지 가져오는 get
+@app.get("/get-image/{image_id}")
+async def get_image(image_id: int, db: Session = Depends(get_db)):
+    # 이미지 데이터를 데이터베이스에서 조회합니다.
+    image_record = db.query(TotalFoodInfo).filter(TotalFoodInfo.id == image_id).first()
+    if image_record and image_record.Total_food_image:
+        # 이미지 데이터를 바이너리 스트림으로 변환합니다.
+        image_stream = io.BytesIO(image_record.Total_food_image)
+        # 이미지 스트림을 반환합니다.
+        return StreamingResponse(image_stream, media_type="image/png")
+    else:
+        raise HTTPException(status_code=404, detail="Image not found")
 
 
 # 먹은양*음식성분 결과 엔드포인트
@@ -771,3 +794,4 @@ def process_nutrition_info(text):
         percentages.append(percentage)
 
     return results
+
