@@ -28,8 +28,6 @@ DATABASE_URL = "sqlite:///./test.db"
 engine = create_engine(DATABASE_URL)
 Base = declarative_base()
 
-
-
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 #권장섭취량 
@@ -337,79 +335,6 @@ async def fetch_nutrition_info():
 #         print(error_message)
 
 #         return JSONResponse(content={"error": error_message}, status_code=500)
-    
-
-
-# OCR get
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-@app.get("/get_image_and_ocr_result")
-async def get_image_and_ocr_result(db: Session = Depends(get_db)):
-    # 가장 최근에 저장된 레코드 조회
-    latest_record = db.query(TextImageInfo).order_by(TextImageInfo.id.desc()).first()
-
-    if latest_record:
-        # 이미지 데이터를 base64로 인코딩
-        image_base64 = base64.b64encode(latest_record.image_data).decode("utf-8")
-
-        # OCR 결과 구성 (실제 OCR 결과는 어떻게 저장되어 있는지에 따라 달라질 수 있음)
-        ocr_result = {
-            "text_name": latest_record.text_name,
-            "text_cal": latest_record.text_cal,
-            "text_nat": latest_record.text_nat,
-            "text_carbs": latest_record.text_carbs,
-            "text_protein": latest_record.text_protein,
-            "text_fat": latest_record.text_fat,
-        }
-
-        return {"image_base64": image_base64, "ocr_result": ocr_result}
-    else:
-        return {"message": "No image and OCR result available."}
-
-#OCR 이미지와 정보값 post
-@app.post("/process_OCR_image")
-async def process_image(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    # 파일 저장 위치 설정
-    current_directory = os.path.abspath(os.getcwd())
-    directory = os.path.join(current_directory, "temp_images")
-
-    # 디렉토리가 존재하지 않으면 생성
-    if not os.path.exists(directory):
-        os.makedirs(directory)
-
-    # 파일 저장 위치 설정
-    file_location = os.path.join(directory, file.filename)
-    with open(file_location, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
-    # OCR 처리 함수 비동기적으로 호출
-    ocr_result = await asyncio.to_thread(process_ocr, file_location, flag="")
-
-    # OCR 결과에서 영양 정보 추출
-    nutrition_info = process_nutrition_info(ocr_result)
-
-    # 이미지 데이터를 데이터베이스에 추가
-    with open(file_location, "rb") as image_file:
-        image_data = image_file.read()
-        image_record = TextImageInfo(
-            text_name="",  # OCR 결과에서 추출한 식품명이 있다면 여기에 할당
-            text_cal="",   # OCR 결과에서 추출한 칼로리 정보가 있다면 여기에 할당
-            text_nat=nutrition_info.get("나트륨", "Unknown"),
-            text_carbs=nutrition_info.get("탄수화물", "Unknown"),
-            text_protein=nutrition_info.get("단백질", "Unknown"),
-            text_fat=nutrition_info.get("지방", "Unknown"),
-            image_data=image_data
-        )
-        db.add(image_record)
-        db.commit()
-
-    return {"message": "Image and OCR data processed successfully"}
-
 
 @app.post("/process_image")
 async def process_image(file: UploadFile = File(...), flag: str = "ALL"):
@@ -437,6 +362,9 @@ async def process_image(file: UploadFile = File(...), flag: str = "ALL"):
     # 음식 예측 API 호출
     response = requests.post(url, headers=headers, files=obj)
 
+    # 파일을 바이너리 형식으로 읽기
+    file.file.seek(0)  # 파일 포인터를 처음으로 이동
+    image_data = file.file.read()
 
     if response.ok:
         json_data = json.loads(response.text)
@@ -445,7 +373,7 @@ async def process_image(file: UploadFile = File(...), flag: str = "ALL"):
         prediction_top1 = data[0]["region_0"]["prediction_top1"]
 
         # 결과를 데이터베이스에 저장
-        save_to_database(prediction_top1)
+        save_to_database(prediction_top1, image_data)
 
         result = {"code": code, "prediction_top1": prediction_top1}
 
@@ -463,7 +391,7 @@ async def process_image(file: UploadFile = File(...), flag: str = "ALL"):
         return JSONResponse(content={"error": error_message}, status_code=500)
 
 
-def save_to_database(prediction_top1):
+def save_to_database(prediction_top1, image_data):
     # Extract relevant information
     food_name = prediction_top1.get("food_name", "")
     food_cal = prediction_top1.get("food_cal", 0.0)
@@ -485,6 +413,7 @@ def save_to_database(prediction_top1):
         food_protein=food_protein,
         food_fat=food_fat,
         food_potassium=food_potassium,
+        food_image_data=image_data,
     )
     db.add(db_food_result)
     db.commit()
@@ -710,17 +639,40 @@ async def recommended_intake():
 
     return response_data
 
-# 텍스트 인식 결과 반환
-@app.get("/fetch_textimage/")
-async def fetch_nutrition_info():
+def get_db():
     db = SessionLocal()
-    data = db.query(TextImageInfo).all()
-    db.close()
-    return data
+    try:
+        yield db
+    finally:
+        db.close()
 
-#OCR 인식인듯
+# OCR get
+@app.get("/OCR_result")
+async def get_image_and_ocr_result(db: Session = Depends(get_db)):
+    # 가장 최근에 저장된 레코드 조회
+    latest_record = db.query(TextImageInfo).order_by(TextImageInfo.id.desc()).first()
+
+    if latest_record:
+        # 이미지 데이터를 base64로 인코딩
+        image_base64 = base64.b64encode(latest_record.image_data).decode("utf-8")
+
+        # OCR 결과 구성 (실제 OCR 결과는 어떻게 저장되어 있는지에 따라 달라질 수 있음)
+        ocr_result = {
+            "text_name": latest_record.text_name,
+            "text_cal": latest_record.text_cal,
+            "text_nat": latest_record.text_nat,
+            "text_carbs": latest_record.text_carbs,
+            "text_protein": latest_record.text_protein,
+            "text_fat": latest_record.text_fat,
+        }
+
+        return {"image_base64": image_base64, "ocr_result": ocr_result}
+    else:
+        return {"message": "No image and OCR result available."}
+
+#OCR 이미지와 정보값 post
 @app.post("/OCRprocess_image")
-async def process_image(file: UploadFile = File(...), flag: str = Query(None)):
+async def process_image(file: UploadFile = File(...), db: Session = Depends(get_db)):
     # 파일 저장 위치 설정
     current_directory = os.path.abspath(os.getcwd())
     directory = os.path.join(current_directory, "temp_images")
@@ -735,8 +687,28 @@ async def process_image(file: UploadFile = File(...), flag: str = Query(None)):
         shutil.copyfileobj(file.file, buffer)
 
     # OCR 처리 함수 비동기적으로 호출
-    result = await asyncio.to_thread(process_ocr, file_location, flag)
-    return {"results": result}
+    ocr_result = await asyncio.to_thread(process_ocr, file_location, flag="")
+
+    # OCR 결과에서 영양 정보 추출
+    nutrition_info = process_nutrition_info(ocr_result)
+
+    # 이미지 데이터를 데이터베이스에 추가
+    with open(file_location, "rb") as image_file:
+        image_data = image_file.read()
+        image_record = TextImageInfo(
+            text_name="",  # OCR 결과에서 추출한 식품명이 있다면 여기에 할당
+            text_cal="",   # OCR 결과에서 추출한 칼로리 정보가 있다면 여기에 할당
+            text_nat=nutrition_info.get("나트륨", "Unknown"),
+            text_carbs=nutrition_info.get("탄수화물", "Unknown"),
+            text_protein=nutrition_info.get("단백질", "Unknown"),
+            text_fat=nutrition_info.get("지방", "Unknown"),
+            image_data=image_data
+        )
+        db.add(image_record)
+        db.commit()
+
+    return {"message": "Image and OCR data processed successfully"}
+
 
 def process_ocr(file_path, flag):
     # Google Vision API 클라이언트 설정
@@ -817,4 +789,3 @@ def process_nutrition_info(text):
         percentages.append(percentage)
 
     return results
-
