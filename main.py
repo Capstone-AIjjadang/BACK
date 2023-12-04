@@ -1,9 +1,11 @@
-from fastapi import FastAPI, Form,File, UploadFile, HTTPException
-from sqlalchemy import create_engine, Column, Integer, Float, String, Text, func
+from fastapi import FastAPI, Form,File, UploadFile, HTTPException,Query
+from sqlalchemy import create_engine, Column, Integer, Float, String, Text,LargeBinary,ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker,relationship
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from google.cloud import vision
+from PIL import ImageFont, ImageDraw, Image
 from typing import List
 import requests
 import json
@@ -11,9 +13,15 @@ from datetime import datetime
 import hmac
 import hashlib
 from pytz import timezone
-from fastapi import Query
-from sqlalchemy.orm import relationship
+
+import asyncio
+import numpy as np
 import os
+import sys
+import io
+import platform
+import re
+import cv2
 import shutil
 
 DATABASE_URL = "sqlite:///./test.db"
@@ -48,6 +56,19 @@ class DayTotalSum(Base):
     Total_food_protein = Column(Float)
     Total_food_fat = Column(Float)
     Total_food_potassium = Column(Float)
+
+#성분표 인식 결과 저장 테이블
+class TextImageInfo(Base):
+    __tablename__ = "text_image_info"
+
+    id = Column(Integer, primary_key=True, index=True)
+    text_name = Column(String)
+    text_cal = Column(String)
+    text_nat = Column(String)
+    text_carbs = Column(String)
+    text_protein = Column(String)
+    text_fat = Column(String)
+Base.metadata.create_all(bind=engine)
 
 #음식 *먹은양 통합 데이터베이스
 class TotalFoodInfo(Base):
@@ -617,7 +638,136 @@ async def recommended_intake():
 
      return response_data
 
+# 텍스트 인식 결과 반환
+@app.get("/fetch_textimage/")
+async def fetch_nutrition_info():
+    db = SessionLocal()
+    data = db.query(TextImageInfo).all()
+    db.close()
+    return data
 
-   
+#OCR 인식인듯
+@app.post("/OCRprocess_image")
+async def process_image(file: UploadFile = File(...), flag: str = Query(None)):
+    # 파일 저장 위치 설정
+    current_directory = os.path.abspath(os.getcwd())
+    directory = os.path.join(current_directory, "temp_images")
+
+    # 디렉토리가 존재하지 않으면 생성
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+
+    # 파일 저장 위치 설정
+    file_location = os.path.join(directory, file.filename)
+    with open(file_location, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    # OCR 처리 함수 비동기적으로 호출
+    result = await asyncio.to_thread(process_ocr, file_location, flag)
+    return {"results": result}
+
+def process_ocr(file_path, flag):
+    # Google Vision API 클라이언트 설정
+    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = r"C:\Users\toong\Documents\카카오톡 받은 파일\linen-walker-216606-76f54386771c.json"
+    client_options = {'api_endpoint': 'eu-vision.googleapis.com'}
+    client = vision.ImageAnnotatorClient(client_options=client_options)
+
+    # 이미지 파일 읽기
+    with io.open(file_path, 'rb') as image_file:
+        content = image_file.read()
+
+    image = vision.Image(content=content)
+    response = client.text_detection(image=image)
+    texts = response.text_annotations
+
+    img1 = cv2.imread(file_path)
+
+    text_to_display = ""
+    text_output_flag = True
+
+    for text in texts:
+        if text_output_flag:
+            ocr_text = text.description
+            x1 = text.bounding_poly.vertices[0].x
+            y1 = text.bounding_poly.vertices[0].y
+            x2 = text.bounding_poly.vertices[1].x
+            y2 = text.bounding_poly.vertices[2].y
+
+            cv2.rectangle(img1, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 1)
+
+            text_to_display += ocr_text + "\n"
+            text_output_flag = False
+
+    # 함수를 호출하여 결과 얻기
+    nutrition_info = process_nutrition_info(text_to_display)
+    json_data = json.dumps(nutrition_info, indent=4, ensure_ascii=False)
+
+# 데이터베이스에 결과 저장
+    db = SessionLocal()
+    try:
+        # 여기서 nutrition_info를 TextImageInfo 모델에 맞게 파싱하고 저장해야 함
+        # 예시: new_record = TextImageInfo(food_name="example", food_cal=100, ...)
+        new_record = TextImageInfo(
+            text_nat=nutrition_info.get("나트륨", "Unknown"),
+            text_carbs=nutrition_info.get("탄수화물", "Unknown"),
+            text_protein=nutrition_info.get("단백질", "Unknown"),
+            text_fat=nutrition_info.get("지방", "Unknown")
+        )  # 적절한 필드 값으로 채워야 함
+        db.add(new_record)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise e
+    finally:
+        db.close()
+
+    return json_data
+
+
+def putText(image, text, x, y, color=(0, 255, 0), font_size=22):
+    if type(image) == np.ndarray:
+        color_coverted = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image = Image.fromarray(color_coverted)
+
+    if platform.system() == 'Darwin':
+        font = r"C:\Users\toong\Documents\카카오톡 받은 파일\AppleGothic.ttf"
+    elif platform.system() == 'Windows':
+        font = r"C:\Users\toong\Documents\카카오톡 받은 파일\GowunBatang-Regular.ttf"
+    else:
+        font = r"C:\Users\toong\Documents\카카오톡 받은 파일\Orbit-Regular.ttf"
+
+    image_font = ImageFont.truetype(font, font_size)
+    font = ImageFont.load_default()
+    draw = ImageDraw.Draw(image)
+
+    draw.text((x, y), text, font=image_font, fill=color)
+
+    numpy_image = np.array(image)
+    opencv_image = cv2.cvtColor(numpy_image, cv2.COLOR_RGB2BGR)
+
+    return opencv_image
+
+def process_nutrition_info(text):
+    # '%'를 찾는 정규 표현식 패턴
+    pattern2 = r'(\d+)\s*%'
+    percentages = re.findall(pattern2, text)
+    prev_percentage = None
+    # 결과를 저장할 딕셔너리
+    results = {}
+
+    # 패턴 정의: 항목, 값, 단위를 추출
+    pattern = r'(?:(나트륨|탄수화물|지방|단백질)\s+([\d.]+(?:\.[\d.]+)?)\s?(mg|g))'
+
+    matches = re.findall(pattern, text)
+
+    for match, percentage in zip(matches, percentages):
+        item_name, ratio, unit = match[0], match[1], match[2]
+        if ratio == "0" and percentage != "0":
+            percentages.append("0")
+
+        results[item_name] = f"{ratio} {unit} {percentage}%"
+        percentages.append(percentage)
+
+    return results
 
      
