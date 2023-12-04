@@ -536,7 +536,7 @@ async def submit_join(
 
 ##avc
 
-
+##
 #총 섭취량 엔드포인트
 @app.get("/total_food_sum")
 async def total_food_sum():
