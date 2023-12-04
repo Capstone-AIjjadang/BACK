@@ -39,8 +39,6 @@ class Recommended_Intake(Base):
     recommended_carbs = Column(Float)
     recommended_protein = Column(Float)
     recommended_fat = Column(Float)
-    recommended__potassium = Column(Float)
-    
 
 
 #일일동안 먹은 총 섭취 영양소(현재 섭취량)
@@ -53,7 +51,6 @@ class DayTotalSum(Base):
     Total_food_carbs = Column(Float)
     Total_food_protein = Column(Float)
     Total_food_fat = Column(Float)
-    Total_food_potassium = Column(Float)
 
 #성분표 인식 결과 저장 테이블
 class TextImageInfo(Base):
@@ -80,7 +77,7 @@ class TotalFoodInfo(Base):
     Total_food_carbs = Column(Float)
     Total_food_protein = Column(Float)
     Total_food_fat = Column(Float)
-    Total_food_potassium = Column(Float)
+    Total_food_image =  Column(LargeBinary)
 
 #음식사진 인식 결과 저장 테이블
 class FoodImageInfo(Base):
@@ -93,7 +90,6 @@ class FoodImageInfo(Base):
     food_carbs = Column(Float)
     food_protein = Column(Float)
     food_fat = Column(Float)
-    food_potassium = Column(Float)
     food_image_data = Column(LargeBinary)
 
 
@@ -145,8 +141,6 @@ class NutritionInfo(Base):
     carbohydrates = Column(Float)
     fat = Column(Float)
     sodium = Column(Float)
-    potassium = Column(Float)
-
 
 
 Base.metadata.create_all(bind=engine)
@@ -248,7 +242,6 @@ async def submit_nutrition_info(
     carbohydrates: float = Form(...),
     fat: float = Form(...),
     sodium: float = Form(...),
-    potassium: float = Form(...),
 ):
     db_data = NutritionInfo(
         calories=calories,
@@ -256,7 +249,6 @@ async def submit_nutrition_info(
         carbohydrates=carbohydrates,
         fat=fat,
         sodium=sodium,
-        potassium=potassium,
     )
     db = SessionLocal()
     db.add(db_data)
@@ -269,7 +261,6 @@ async def submit_nutrition_info(
         "carbohydrates": carbohydrates,
         "fat": fat,
         "sodium": sodium,
-        "potassium": potassium,
     }
     print("Received nutrition data:", response_data)
     return response_data
@@ -399,8 +390,6 @@ def save_to_database(prediction_top1, image_data):
     food_carbs = prediction_top1.get("food_carbs", 0.0)
     food_protein = prediction_top1.get("food_protein", 0.0)
     food_fat = prediction_top1.get("food_fat", 0.0)
-    food_potassium = prediction_top1.get("food_potassium", 0.0)
-
     #새로운 데이터베이스 세션 생성
     db = SessionLocal()
 
@@ -412,7 +401,6 @@ def save_to_database(prediction_top1, image_data):
         food_carbs=food_carbs,
         food_protein=food_protein,
         food_fat=food_fat,
-        food_potassium=food_potassium,
         food_image_data=image_data,
     )
     db.add(db_food_result)
@@ -504,7 +492,6 @@ async def update_user(
     food_image_info.food_carbs *= amount_eaten
     food_image_info.food_protein *= amount_eaten
     food_image_info.food_fat *= amount_eaten
-    food_image_info.food_potassium *= amount_eaten
     # 데이터베이스에 변경사항 반영
     db.commit()
     db.close()
@@ -534,7 +521,7 @@ async def submit_join(
         Total_food_carbs=food_image_info.food_carbs * amount_eaten,
         Total_food_protein=food_image_info.food_protein * amount_eaten,
         Total_food_fat=food_image_info.food_fat * amount_eaten,
-        Total_food_potassium=food_image_info.food_potassium * amount_eaten,
+        Total_food_image=food_image_info.food_image_data,
     )
 
     # TotalFoodInfo 테이블에 저장
@@ -551,7 +538,6 @@ async def submit_join(
             "Total_food_carbs": total_food_data.Total_food_carbs,
             "Total_food_protein": total_food_data.Total_food_protein,
             "Total_food_fat": total_food_data.Total_food_fat,
-            "Total_food_potassium": total_food_data.Total_food_potassium,
         },
     }
 
@@ -573,7 +559,6 @@ async def total_food_sum():
         Total_food_carbs  = sum(food.Total_food_carbs for food in data),
         Total_food_protein  = sum(food.Total_food_protein for food in data),
         Total_food_fat = sum(food.Total_food_fat for food in data),
-        Total_food_potassium  = sum(food.Total_food_potassium for food in data),
     )
     #TotalFoodInfo에 저장
     db.add(day_sum)
@@ -589,7 +574,6 @@ async def total_food_sum():
             "Total_food_carbs": day_sum.Total_food_carbs,
             "Total_food_protein": day_sum.Total_food_protein,
             "Total_food_fat": day_sum.Total_food_fat,
-            "Total_food_potassium": day_sum.Total_food_potassium,
         },
     }
 
@@ -616,7 +600,6 @@ async def recommended_intake():
     recommended_carbs=recommended_cal*0.65/4,
     recommended_protein=recommended_cal*0.15/4,
     recommended_fat=recommended_cal*0.2/9,
-    recommended_potassium=2300,
 )
     
     #Reocmmended Intake에 저장
@@ -633,7 +616,6 @@ async def recommended_intake():
             "Total_food_carbs":  recommended.Total_food_carbs,
             "Total_food_protein":  recommended.Total_food_protein,
             "Total_food_fat":  recommended.Total_food_fat,
-            "Total_food_potassium":  recommended.Total_food_potassium,
         },
     }
 
