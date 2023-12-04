@@ -659,7 +659,7 @@ async def get_image_and_ocr_result(db: Session = Depends(get_db)):
 
     if latest_record:
         # 이미지 데이터를 base64로 인코딩
-        image_base64 = base64.b64encode(latest_record.image_data).decode("utf-8")
+        image_base64 = base64.b64encode(latest_record.text_image_data).decode("utf-8")
 
         # OCR 결과 구성 (실제 OCR 결과는 어떻게 저장되어 있는지에 따라 달라질 수 있음)
         ocr_result = {
@@ -702,12 +702,12 @@ async def process_image(file: UploadFile = File(...), db: Session = Depends(get_
         image_data = image_file.read()
         image_record = TextImageInfo(
             text_name="",  # OCR 결과에서 추출한 식품명이 있다면 여기에 할당
-            text_cal="",   # OCR 결과에서 추출한 칼로리 정보가 있다면 여기에 할당
+            text_cal=nutrition_info.get("kcal", "Unknown"),   # OCR 결과에서 추출한 칼로리 정보가 있다면 여기에 할당
             text_nat=nutrition_info.get("나트륨", "Unknown"),
             text_carbs=nutrition_info.get("탄수화물", "Unknown"),
             text_protein=nutrition_info.get("단백질", "Unknown"),
             text_fat=nutrition_info.get("지방", "Unknown"),
-            image_data=image_data
+            text_image_data=image_data
         )
         db.add(image_record)
         db.commit()
@@ -717,7 +717,7 @@ async def process_image(file: UploadFile = File(...), db: Session = Depends(get_
 
 def process_ocr(file_path, flag):
     # Google Vision API 클라이언트 설정
-    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = r"C:\Users\toong\Documents\카카오톡 받은 파일\linen-walker-216606-76f54386771c.json"
+    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = r"C:\Users\andyt\OneDrive\바탕 화면\Project\python\OCR\linen-walker-216606-76f54386771c.json"
     client_options = {'api_endpoint': 'eu-vision.googleapis.com'}
     client = vision.ImageAnnotatorClient(client_options=client_options)
 
@@ -772,26 +772,30 @@ def process_ocr(file_path, flag):
 
     return json_data
 
+
 def process_nutrition_info(text):
-    # '%'를 찾는 정규 표현식 패턴
-    pattern2 = r'(\d+)\s*%'
-    percentages = re.findall(pattern2, text)
-    prev_percentage = None
-    # 결과를 저장할 딕셔너리
     results = {}
 
-    # 패턴 정의: 항목, 값, 단위를 추출
-    pattern = r'(?:(나트륨|탄수화물|지방|단백질)\s+([\d.]+(?:\.[\d.]+)?)\s?(mg|g))'
+    # 영양소 및 kcal 패턴 정의
+    nutrition_pattern = r'(?:(나트륨|탄수화물|지방|단백질)\s+([\d.]+(?:\.[\d.]+)?)\s?(mg|g))'
+    kcal_pattern = r'(\d+)\s*kcal'
 
-    matches = re.findall(pattern, text)
+    # 영양소 매칭
+    nutrition_matches = re.findall(nutrition_pattern, text)
+    for item_name, ratio, unit in nutrition_matches:
+        results[item_name] = f"{ratio} {unit}"
 
-    for match, percentage in zip(matches, percentages):
-        item_name, ratio, unit = match[0], match[1], match[2]
-        if ratio == "0" and percentage != "0":
-            percentages.append("0")
+    # kcal 매칭
+    kcal_matches = re.findall(kcal_pattern, text)
+    if kcal_matches:
+        results["kcal"] = f"{kcal_matches[0]} kcal"
 
-        results[item_name] = f"{ratio} {unit} {percentage}%"
-        percentages.append(percentage)
+    numerical_values = {}
+    for key, value in results.items():
+        # 숫자 및 소수점 추출
+        matches = re.findall(r'[\d.]+', value)
+        if matches:
+            # 첫 번째 숫자(또는 소수점 숫자)를 저장
+            numerical_values[key] = float(matches[0])
 
-    return results
-
+    return numerical_values
