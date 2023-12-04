@@ -534,7 +534,7 @@ async def submit_join(
 
     return response_data
 
-
+##avc
 
 
 #총 섭취량 엔드포인트
