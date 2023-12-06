@@ -5,13 +5,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from google.cloud import vision
 from PIL import Image, ImageFont, ImageDraw
-from datetime import datetime
-from pytz import timezone
 from typing import List
 
 import base64
 import requests
 import json
+from datetime import datetime
+import hmac
+import hashlib
+from pytz import timezone
+
 import asyncio
 import numpy as np
 import os
@@ -21,8 +24,7 @@ import platform
 import re
 import cv2
 import shutil
-import hmac
-import hashlib
+
 
 DATABASE_URL = "sqlite:///./test.db"
 engine = create_engine(DATABASE_URL)
@@ -33,13 +35,13 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 #권장섭취량 
 class Recommended_Intake(Base):
     __tablename__ = "recommended_intake"
+
     id = Column(Integer, primary_key=True, index=True)
     recommended_cal = Column(Float)
-    recommended_nat = Column(Float)
+    recommended_nat = Column(Integer)
     recommended_carbs = Column(Float)
     recommended_protein = Column(Float)
     recommended_fat = Column(Float)
-
 
 #일일동안 먹은 총 섭취 영양소(현재 섭취량)
 class DayTotalSum(Base):
@@ -52,20 +54,6 @@ class DayTotalSum(Base):
     Total_food_protein = Column(Float)
     Total_food_fat = Column(Float)
 
-#성분표 인식 결과 저장 테이블
-class TextImageInfo(Base):
-    __tablename__ = "text_image_info"
-
-    id = Column(Integer, primary_key=True, index=True)
-    text_name = Column(String)
-    text_cal = Column(String)
-    text_nat = Column(String)
-    text_carbs = Column(String)
-    text_protein = Column(String)
-    text_fat = Column(String)
-    text_image_data = Column(LargeBinary)
-Base.metadata.create_all(bind=engine)
-
 #음식 *먹은양 통합 데이터베이스
 class TotalFoodInfo(Base):
     __tablename__ = "food_total_info"
@@ -77,7 +65,6 @@ class TotalFoodInfo(Base):
     Total_food_carbs = Column(Float)
     Total_food_protein = Column(Float)
     Total_food_fat = Column(Float)
-    Total_food_image =  Column(LargeBinary)
 
 #음식사진 인식 결과 저장 테이블
 class FoodImageInfo(Base):
@@ -90,10 +77,27 @@ class FoodImageInfo(Base):
     food_carbs = Column(Float)
     food_protein = Column(Float)
     food_fat = Column(Float)
-    food_image_data = Column(LargeBinary)
 
+#성분표 인식 결과 저장 테이블
+class TextImageInfo(Base):
+    __tablename__ = "text_image_info"
 
+    id = Column(Integer, primary_key=True, index=True)
+    text_name = Column(String)
+    text_cal = Column(String)
+    text_nat = Column(String)
+    text_carbs = Column(String)
+    text_protein = Column(String)
+    text_fat = Column(String)
 
+#성분표 인식 결과 저장 테이블
+class OCRImageInfo(Base):
+    __tablename__ = "OCR_image_info"
+
+    id = Column(Integer, primary_key=True, index=True)
+    text_image_data = Column(LargeBinary)
+
+Base.metadata.create_all(bind=engine)
 #회원정보 테이블 추가
 class UserJoin(Base):
     __tablename__ = "userjoin"
@@ -109,38 +113,6 @@ class UserJoin(Base):
     gender = Column(String)
     medical_history = Column(String)
     
-
-    ##time_infos = relationship("TimeInfo", back_populates="user")
-    ##all_food_infos = relationship("AllFoodInfo", back_populates="user")
-    ##nutrition_infos = relationship("NutritionInfo", back_populates="user")
-    ## text_infos = relationship("TextInfo", back_populates="user")
-    ##textimage_infos = relationship("TextimageInfo", back_populates="user")
-    ##food_infos = relationship("FoodInfo", back_populates="user")
-    ##foodimage_infos = relationship("FoodimageInfo", back_populates="user")
-
-
-#개인정보 테이블 추가
-class UserInfo(Base):
-    __tablename__ = "user_info"
-
-    id = Column(Integer, primary_key=True, index=True)
-    age = Column(Integer)
-    weight = Column(Float)
-    height = Column(Float)
-    gender = Column(String)
-    medical_history = Column(Text)
-
-
-#영양성분 테이블 추가
-class NutritionInfo(Base):
-    __tablename__ = "nutrition_info"
-
-    id = Column(Integer, primary_key=True, index=True)
-    calories = Column(Float)
-    protein = Column(Float)
-    carbohydrates = Column(Float)
-    fat = Column(Float)
-    sodium = Column(Float)
 
 
 Base.metadata.create_all(bind=engine)
@@ -164,7 +136,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 #개인정보 api 
-@app.post("/submit_user_join/")
+@app.post("/user_join/")
 async def submit_join(
     
     name :str=Form(...),
@@ -205,132 +177,10 @@ async def submit_join(
     return response_data
 
 
-#개인정보 api 
-@app.post("/submit/")
-async def submit_info(
-    age: int = Form(...),
-    weight: float = Form(...),
-    height: float = Form(...),
-    gender: str = Form(...),
-    medical_history: str = Form(...),
-):
-    db_data = UserInfo(age=age, weight=weight, height=height, gender=gender, medical_history=medical_history)
 
-    db = SessionLocal()
-    db.add(db_data)
-    db.commit()
-    db.refresh(db_data)
-    db.close()
-
-    response_data = {
-        "age": age,
-        "weight": weight,
-        "height": height,
-        "gender": gender,
-        "medical_history": medical_history,
-    }
-
-    print("Received data:", response_data)
-
-    return response_data
-
-#영양성분 api
-@app.post("/submit_nutrition_info/")
-async def submit_nutrition_info(
-    calories: float = Form(...),
-    protein: float = Form(...),
-    carbohydrates: float = Form(...),
-    fat: float = Form(...),
-    sodium: float = Form(...),
-):
-    db_data = NutritionInfo(
-        calories=calories,
-        protein=protein,
-        carbohydrates=carbohydrates,
-        fat=fat,
-        sodium=sodium,
-    )
-    db = SessionLocal()
-    db.add(db_data)
-    db.commit()
-    db.refresh(db_data)
-    db.close()
-    response_data = {
-        "calories": calories,
-        "protein": protein,
-        "carbohydrates": carbohydrates,
-        "fat": fat,
-        "sodium": sodium,
-    }
-    print("Received nutrition data:", response_data)
-    return response_data
-
-#개인정보 데이터 호출 api
-@app.get("/fetch_data/")
-async def fetch_data():
-    db = SessionLocal()
-    data = db.query(UserInfo).all()
-    db.close()
-    return data
-
-#영양분 데이터 호출 api
-@app.get("/fetch_nutrition_info/")
-async def fetch_nutrition_info():
-    db = SessionLocal()
-    data = db.query(NutritionInfo).all()
-    db.close()
-    return data
-
-
-
-#음식 사진 api 호출하기
-# @app.post("/process_image")
-# async def process_image(file: UploadFile = File(...), flag: str = "ALL"):
-#     timestamp = datetime.now(timezone("Asia/Seoul")).strftime("%Y%m%d%H%M%S%f")[:-3]
-#     client_id = "glabs_638c223a818794216d1ba2d03f8f395054565ac1b5bc948c9ff6f392195615be"
-#     client_secret = "fb66b6fc7ac25cdd55439205994f85b6729c7f400674c3d1acddd007b003c6e4"
-#     client_key = "80aa5a78-3ba6-546f-aefb-3aa7a47dfa77"
-#     signature = hmac.new(
-#         key=client_secret.encode("UTF-8"),
-#         msg=f"{client_id}:{timestamp}".encode("UTF-8"),
-#         digestmod=hashlib.sha256,
-#     ).hexdigest()
-#     url = "https://aiapi.genielabs.ai/kt/vision/food"
-#     headers = {
-#         "Accept": "*/*",
-#         "x-client-key": client_key,
-#         "x-client-signature": signature,
-#         "x-auth-timestamp": timestamp,
-#     }
-#     fields = {"flag": flag}
-#     obj = {"metadata": json.dumps(fields), "media": file.file}
-#     response = requests.post(url, headers=headers, files=obj)
-
-#     if response.ok:
-#         json_data = json.loads(response.text)
-#         code = json_data["code"]
-#         data = json_data["data"]
-#         prediction_top1 = data[0]["region_0"]["prediction_top1"]
-        
-#         result = {"code": code, "prediction_top1": prediction_top1}
-
-#         # 터미널에 결과 출력
-#         print("Code:", code)
-#         print("Prediction Top1:", prediction_top1)
-
-#         return JSONResponse(content=result, status_code=200)
-#     else:
-#         error_message = f"Error: {response.status_code} - {response.text}"
-
-#         # 터미널에 에러 출력
-#         print(error_message)
-
-#         return JSONResponse(content={"error": error_message}, status_code=500)
-
-@app.post("/process_image")
-async def process_image(file: UploadFile = File(...), flag: str = "ALL"):
     
-    # 현재 시각과 클라이언트 정보를 이용하여 서명 생성
+@app.post("/process_foodimage/")
+async def process_image(file: UploadFile = File(...), flag: str = "ALL"):
     timestamp = datetime.now(timezone("Asia/Seoul")).strftime("%Y%m%d%H%M%S%f")[:-3]
     client_id = "glabs_638c223a818794216d1ba2d03f8f395054565ac1b5bc948c9ff6f392195615be"
     client_secret = "fb66b6fc7ac25cdd55439205994f85b6729c7f400674c3d1acddd007b003c6e4"
@@ -340,7 +190,7 @@ async def process_image(file: UploadFile = File(...), flag: str = "ALL"):
         msg=f"{client_id}:{timestamp}".encode("UTF-8"),
         digestmod=hashlib.sha256,
     ).hexdigest()
-    # 음식 예측 API 호출을 위한 요청 헤더 및 데이터 설정
+
     url = "https://aiapi.genielabs.ai/kt/vision/food"
     headers = {
         "Accept": "*/*",
@@ -350,12 +200,8 @@ async def process_image(file: UploadFile = File(...), flag: str = "ALL"):
     }
     fields = {"flag": flag}
     obj = {"metadata": json.dumps(fields), "media": file.file}
-    # 음식 예측 API 호출
-    response = requests.post(url, headers=headers, files=obj)
 
-    # 파일을 바이너리 형식으로 읽기
-    file.file.seek(0)  # 파일 포인터를 처음으로 이동
-    image_data = file.file.read()
+    response = requests.post(url, headers=headers, files=obj)
 
     if response.ok:
         json_data = json.loads(response.text)
@@ -363,37 +209,19 @@ async def process_image(file: UploadFile = File(...), flag: str = "ALL"):
         data = json_data["data"]
         prediction_top1 = data[0]["region_0"]["prediction_top1"]
 
-        # 결과를 데이터베이스에 저장
-        save_to_database(prediction_top1, image_data)
+        save_to_database(prediction_top1)
 
-        result = {"code": code, "prediction_top1": prediction_top1}
-
-        # 터미널에 결과 출력
-        print("Code:", code)
-        print("Prediction Top1:", prediction_top1)
-
-        return JSONResponse(content=result, status_code=200)
-    else:
-        error_message = f"Error: {response.status_code} - {response.text}"
-
-        # 터미널에 에러 출력
-        print(error_message)
-
-        return JSONResponse(content={"error": error_message}, status_code=500)
-
-
-def save_to_database(prediction_top1, image_data):
-    # Extract relevant information
+    
+def save_to_database(prediction_top1):
     food_name = prediction_top1.get("food_name", "")
     food_cal = prediction_top1.get("food_cal", 0.0)
     food_nat = prediction_top1.get("food_nat", 0.0)
     food_carbs = prediction_top1.get("food_carbs", 0.0)
     food_protein = prediction_top1.get("food_protein", 0.0)
     food_fat = prediction_top1.get("food_fat", 0.0)
-    #새로운 데이터베이스 세션 생성
-    db = SessionLocal()
+    
 
-    # 음식 사진 결과 저장하는 데이터베이스 생성 및 저장
+    db = SessionLocal()
     db_food_result = FoodImageInfo(
         food_name=food_name,
         food_cal=food_cal,
@@ -401,49 +229,16 @@ def save_to_database(prediction_top1, image_data):
         food_carbs=food_carbs,
         food_protein=food_protein,
         food_fat=food_fat,
-        food_image_data=image_data,
     )
     db.add(db_food_result)
     db.commit()
     db.refresh(db_food_result)
-
-    #데이터 세션 닫기
     db.close()
 
 
-from fastapi.responses import StreamingResponse
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-#음식 인식의 이미지 가져오는 get
-@app.get("/get-image/{image_id}")
-async def get_image(image_id: int, db: Session = Depends(get_db)):
-    # 이미지 데이터를 데이터베이스에서 조회합니다.
-    image_record = db.query(TotalFoodInfo).filter(TotalFoodInfo.id == image_id).first()
-    if image_record and image_record.Total_food_image:
-        # 이미지 데이터를 바이너리 스트림으로 변환합니다.
-        image_stream = io.BytesIO(image_record.Total_food_image)
-        # 이미지 스트림을 반환합니다.
-        return StreamingResponse(image_stream, media_type="image/png")
-    else:
-        raise HTTPException(status_code=404, detail="Image not found")
-
-
-# 먹은양*음식성분 결과 엔드포인트
-@app.get("/fetch_total_food_info/")
-async def  fetch_food_image_info():
-    db = SessionLocal()
-    data = db.query(TotalFoodInfo).all()
-    db.close()
-    return data
 
 # 이미지 처리 결과를 반환하는 API 엔드포인트
-@app.get("/fetch_food_image_info/")
+@app.get("/food_image_info/")
 async def  fetch_food_image_info():
     db = SessionLocal()
     data = db.query(FoodImageInfo).all()
@@ -451,7 +246,7 @@ async def  fetch_food_image_info():
     return data
 
 #개인정보 페이지 정보 엔드포인트
-@app.get("/fetch_user_join/")
+@app.get("/user_info/")
 async def fetch_user_join():
     db=SessionLocal()
     data=db.query(UserJoin).all()
@@ -469,7 +264,7 @@ async def fetch_user_join():
     return user_data
 
 # 사용자 정보를 업데이트하는 PUT 엔드포인트
-@app.put("/update_user/")
+@app.put("/user_update/")
 async def update_user(
     name: str = Form(...),
     weight: float = Form(...),
@@ -498,33 +293,9 @@ async def update_user(
 
     return {"message": "사용자 정보가 성공적으로 업데이트되었습니다."}
 
-@app.put("/update_FoodImageInfo/")
-async def update_user(
-    amount_eaten: float = Form(...),
-    
-    
-):
-    db = SessionLocal()
-    food_image_info = db.query(FoodImageInfo).order_by(FoodImageInfo.id.desc()).first()
-    if food_image_info is None:
-        raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다")
 
-    # 사용자 정보 업데이트
-    food_image_info.food_cal *= amount_eaten
-    food_image_info.food_nat *= amount_eaten
-    food_image_info.food_carbs *= amount_eaten
-    food_image_info.food_protein *= amount_eaten
-    food_image_info.food_fat *= amount_eaten
-    # 데이터베이스에 변경사항 반영
-    db.commit()
-    db.close()
-    # 업데이트된 사용자 정보를 반환
-    # 업데이트가 성공했음을 알리는 메시지를 반환
-
-    return {"message": "사용자 정보가 성공적으로 업데이트되었습니다."}
-
-#음식*먹은양 ->새로운 데이터베이스 (음식사진과 ocr 통합) 
-@app.post("/submit_total_food_info/")
+#음식*먹은양 ->새로운 데이터베이스 (음식사진)
+@app.post("/total_food_result/")
 async def submit_join(
     amount_eaten: float = Form(...),
     
@@ -544,7 +315,7 @@ async def submit_join(
         Total_food_carbs=food_image_info.food_carbs * amount_eaten,
         Total_food_protein=food_image_info.food_protein * amount_eaten,
         Total_food_fat=food_image_info.food_fat * amount_eaten,
-        Total_food_image=food_image_info.food_image_data,
+    
     )
 
     # TotalFoodInfo 테이블에 저장
@@ -561,6 +332,51 @@ async def submit_join(
             "Total_food_carbs": total_food_data.Total_food_carbs,
             "Total_food_protein": total_food_data.Total_food_protein,
             "Total_food_fat": total_food_data.Total_food_fat,
+        
+        },
+    }
+
+    return response_data
+
+#음식*먹은양 ->새로운 데이터베이스 (ocr )
+@app.post("/total_text_result/")
+async def submit_join(
+    amount_eaten: float = Form(...),
+    name: str =Form(...),
+):
+    db = SessionLocal()
+    # 가장 최근의 음식 정보를 가져옴
+    food_image_info = db.query(TextImageInfo).order_by(TextImageInfo.id.desc()).first()
+
+    if not food_image_info:
+        raise HTTPException(status_code=404, detail="음식 정보를 찾을 수 없습니다.")
+
+# TotalFoodInfo에 저장할 데이터 생성
+    total_food_data = TotalFoodInfo(
+        Total_food_name=name,
+        Total_food_cal=food_image_info.text_cal * amount_eaten,
+        Total_food_nat=food_image_info.text_nat * amount_eaten,
+        Total_food_carbs=food_image_info.text_carbs * amount_eaten,
+        Total_food_protein=food_image_info.text_protein * amount_eaten,
+        Total_food_fat=food_image_info.text_fat * amount_eaten,
+    
+    )
+
+    # TotalFoodInfo 테이블에 저장
+    db.add(total_food_data)
+    db.commit()
+    db.refresh(total_food_data)
+
+    response_data = {
+        "message": "Data successfully submitted",
+        "total_food_data": {
+            "Total_food_name": total_food_data.Total_food_name,
+            "Total_food_cal": total_food_data.Total_food_cal,
+            "Total_food_nat": total_food_data.Total_food_nat,
+            "Total_food_carbs": total_food_data.Total_food_carbs,
+            "Total_food_protein": total_food_data.Total_food_protein,
+            "Total_food_fat": total_food_data.Total_food_fat,
+            
         },
     }
 
@@ -570,7 +386,7 @@ async def submit_join(
 
 ##
 #총 섭취량 엔드포인트
-@app.get("/total_food_sum")
+@app.get("/today_sum_food/")
 async def total_food_sum():
     db = SessionLocal()
     data = db.query(TotalFoodInfo).all()
@@ -597,13 +413,14 @@ async def total_food_sum():
             "Total_food_carbs": day_sum.Total_food_carbs,
             "Total_food_protein": day_sum.Total_food_protein,
             "Total_food_fat": day_sum.Total_food_fat,
+        
         },
     }
 
     return response_data
 
 #권장섭취량
-@app.get("/recommended_intake")
+@app.get("/recommended_intake/")
 async def recommended_intake():
     db = SessionLocal()
     user_data = db.query(UserJoin).order_by(UserJoin.id.desc()).first()
@@ -613,16 +430,17 @@ async def recommended_intake():
     weight = user_data.weight
     
     #남자 활동적 식
-    recommended_cal = 662 - (9.53 * age) + 1.25 * (15.91 * weight + 539.6 * height)
+    calo = 662 - (9.53 * age) + 1.25 * ((15.91 * weight) + (539.6 * height))
 
+    
 
     # 각 항목별 총합을 계산
     recommended = Recommended_Intake(
-    recommended_cal=recommended_cal,
+    recommended_cal=calo,
     recommended_nat=2300,
-    recommended_carbs=recommended_cal*0.65/4,
-    recommended_protein=recommended_cal*0.15/4,
-    recommended_fat=recommended_cal*0.2/9,
+    recommended_carbs=calo*0.65/4,
+    recommended_protein=calo*0.15/4,
+    recommended_fat=calo*0.2/9,
 )
     
     #Reocmmended Intake에 저장
@@ -644,125 +462,79 @@ async def recommended_intake():
 
     return response_data
 
-def get_db():
+# 먹은양*음식성분 결과 엔드포인트
+@app.get("/list_food_info/")
+async def  fetch_food_image_info():
+    db = SessionLocal()
+    data = db.query(TotalFoodInfo).all()
+    db.close()
+    return data
+
+import base64
+
+#OCR 결과 반환
+@app.get("/fetch_textimage/")
+async def fetch_nutrition_info():
+    def convert_image_to_base64(image_binary):
+        if image_binary:
+            return base64.b64encode(image_binary).decode('utf-8')
+        return None
+
     db = SessionLocal()
     try:
-        yield db
+        data = db.query(TextImageInfo).all()
+        data2 = db.query(OCRImageInfo).all()
+
+        # TextImageInfo 데이터 직렬화
+        textimageinfo_data = [
+            {
+                "id": item.id, 
+                "text_cal": item.text_cal, 
+                "text_nat": item.text_nat, 
+                "text_carbs": item.text_carbs, 
+                "text_protein": item.text_protein, 
+                "text_fat": item.text_fat
+            } 
+            for item in data
+        ]
+
+        # OCRImageInfo 데이터 직렬화 (이미지는 Base64로 인코딩)
+        timageinfo_data = [{"image": convert_image_to_base64(item.text_image_data)} for item in data2]
+
+        return {"TextImageInfo": textimageinfo_data, "OCRImageInfo": timageinfo_data}
     finally:
         db.close()
 
-# OCR get
-@app.get("/OCR_result")
-async def get_image_and_ocr_result(db: Session = Depends(get_db)):
-    # 가장 최근에 저장된 레코드 조회
-    latest_record = db.query(TextImageInfo).order_by(TextImageInfo.id.desc()).first()
+#OCR 인식
+@app.post("/process_OCRimage") 
+async def process_image(file: UploadFile = File(...), flag: str = Query(None)): 
+    # 파일 저장 위치 설정 
+    current_directory = os.path.abspath(os.getcwd()) 
+    directory = os.path.join(current_directory, "temp_images") 
 
-    if latest_record:
-        # 이미지 데이터를 base64로 인코딩
-        image_base64 = base64.b64encode(latest_record.text_image_data).decode("utf-8")
+    # 디렉토리가 존재하지 않으면 생성 
+    if not os.path.exists(directory): 
+        os.makedirs(directory) 
 
-        # OCR 결과 구성 (실제 OCR 결과는 어떻게 저장되어 있는지에 따라 달라질 수 있음)
-        ocr_result = {
-            "text_name": latest_record.text_name,
-            "text_cal": latest_record.text_cal,
-            "text_nat": latest_record.text_nat,
-            "text_carbs": latest_record.text_carbs,
-            "text_protein": latest_record.text_protein,
-            "text_fat": latest_record.text_fat,
-        }
+    # 파일 저장 위치 설정 
+    file_location = os.path.join(directory, file.filename) 
+    with open(file_location, "wb") as buffer: 
+        shutil.copyfileobj(file.file, buffer) 
 
-        return {"image_base64": image_base64, "ocr_result": ocr_result}
-    else:
-        return {"message": "No image and OCR result available."}
+    # OCR 처리 함수 비동기적으로 호출 
+    result = await asyncio.to_thread(process_ocr, file_location, flag) 
 
-#OCR 이미지와 정보값 post
-@app.post("/OCRprocess_image")
-async def process_image(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    # 파일 저장 위치 설정
-    current_directory = os.path.abspath(os.getcwd())
-    directory = os.path.join(current_directory, "temp_images")
+    # 파일을 바이너리 형태로 읽기
+    with open(file_location, "rb") as img_file:
+        img_data = img_file.read()
 
-    # 디렉토리가 존재하지 않으면 생성
-    if not os.path.exists(directory):
-        os.makedirs(directory)
-
-    # 파일 저장 위치 설정
-    file_location = os.path.join(directory, file.filename)
-    with open(file_location, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
-    # OCR 처리 함수 비동기적으로 호출
-    ocr_result = await asyncio.to_thread(process_ocr, file_location, flag="")
-
-    # OCR 결과에서 영양 정보 추출
-    nutrition_info = process_nutrition_info(ocr_result)
-
-    # 이미지 데이터를 데이터베이스에 추가
-    with open(file_location, "rb") as image_file:
-        image_data = image_file.read()
-        image_record = TextImageInfo(
-            text_name="",  # OCR 결과에서 추출한 식품명이 있다면 여기에 할당
-            text_cal=nutrition_info.get("kcal", "Unknown"),   # OCR 결과에서 추출한 칼로리 정보가 있다면 여기에 할당
-            text_nat=nutrition_info.get("나트륨", "Unknown"),
-            text_carbs=nutrition_info.get("탄수화물", "Unknown"),
-            text_protein=nutrition_info.get("단백질", "Unknown"),
-            text_fat=nutrition_info.get("지방", "Unknown"),
-            text_image_data=image_data
-        )
-        db.add(image_record)
-        db.commit()
-
-    return {"message": "Image and OCR data processed successfully"}
-
-
-def process_ocr(file_path, flag):
-    # Google Vision API 클라이언트 설정
-    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = r"C:\Users\andyt\OneDrive\바탕 화면\Project\python\OCR\linen-walker-216606-76f54386771c.json"
-    client_options = {'api_endpoint': 'eu-vision.googleapis.com'}
-    client = vision.ImageAnnotatorClient(client_options=client_options)
-
-    # 이미지 파일 읽기
-    with io.open(file_path, 'rb') as image_file:
-        content = image_file.read()
-
-    image = vision.Image(content=content)
-    response = client.text_detection(image=image)
-    texts = response.text_annotations
-
-    img1 = cv2.imread(file_path)
-
-    text_to_display = ""
-    text_output_flag = True
-
-    for text in texts:
-        if text_output_flag:
-            ocr_text = text.description
-            x1 = text.bounding_poly.vertices[0].x
-            y1 = text.bounding_poly.vertices[0].y
-            x2 = text.bounding_poly.vertices[1].x
-            y2 = text.bounding_poly.vertices[2].y
-
-            cv2.rectangle(img1, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 1)
-
-            text_to_display += ocr_text + "\n"
-            text_output_flag = False
-
-    # 함수를 호출하여 결과 얻기
-    nutrition_info = process_nutrition_info(text_to_display)
-    json_data = json.dumps(nutrition_info, indent=4, ensure_ascii=False)
-
-# 데이터베이스에 결과 저장
+    # 데이터베이스에 이미지 데이터 저장
     db = SessionLocal()
     try:
-        # 여기서 nutrition_info를 TextImageInfo 모델에 맞게 파싱하고 저장해야 함
-        # 예시: new_record = TextImageInfo(food_name="example", food_cal=100, ...)
-        new_record = TextImageInfo(
-            text_nat=nutrition_info.get("나트륨", "Unknown"),
-            text_carbs=nutrition_info.get("탄수화물", "Unknown"),
-            text_protein=nutrition_info.get("단백질", "Unknown"),
-            text_fat=nutrition_info.get("지방", "Unknown")
-        )  # 적절한 필드 값으로 채워야 함
-        db.add(new_record)
+        new_image_record = OCRImageInfo(
+            text_image_data=img_data
+        )
+        db.add(new_image_record)
         db.commit()
     except Exception as e:
         db.rollback()
@@ -770,7 +542,53 @@ def process_ocr(file_path, flag):
     finally:
         db.close()
 
-    return json_data
+    return {"results": result} 
+
+
+def process_ocr(file_path, flag): 
+    # Google Vision API 클라이언트 설정 
+    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = r"C:\Users\andyt\OneDrive\바탕 화면\Project\python\OCR\linen-walker-216606-76f54386771c.json" 
+    client_options = {'api_endpoint': 'eu-vision.googleapis.com'} 
+    client = vision.ImageAnnotatorClient(client_options=client_options)  
+    # 이미지 파일 읽기 
+    with io.open(file_path, 'rb') as image_file: 
+        content = image_file.read() 
+
+    image = vision.Image(content=content) 
+    response = client.text_detection(image=image) 
+    texts = response.text_annotations 
+
+    text_to_display = "" 
+    text_output_flag = True 
+
+    for text in texts: 
+        if text_output_flag: 
+            ocr_text = text.description
+            text_to_display += ocr_text + "\n" 
+            text_output_flag = False 
+
+    # 함수를 호출하여 결과 얻기 
+    nutrition_info = process_nutrition_info(text_to_display) 
+    json_data = json.dumps(nutrition_info, indent=4, ensure_ascii=False) 
+
+# 데이터베이스에 결과 저장 
+    db = SessionLocal() 
+    try: 
+        new_record = TextImageInfo( 
+            text_cal=nutrition_info.get("kcal", "Unknown"),
+            text_nat=nutrition_info.get("나트륨", "Unknown"), 
+            text_carbs=nutrition_info.get("탄수화물", "Unknown"), 
+            text_protein=nutrition_info.get("단백질", "Unknown"), 
+            text_fat=nutrition_info.get("지방", "Unknown"),
+        )
+        db.add(new_record) 
+        db.commit()
+    except Exception as e: 
+        db.rollback() 
+        raise e 
+    finally: 
+        db.close() 
+    return json_data 
 
 
 def process_nutrition_info(text):
