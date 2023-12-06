@@ -257,7 +257,6 @@ async def fetch_user_join():
 # 사용자 정보를 업데이트하는 PUT 엔드포인트
 @app.put("/user_update/")
 async def update_user(
-    name: str = Form(...),
     weight: float = Form(...),
     height: float = Form(...),
     gender: str = Form(...),
@@ -270,7 +269,6 @@ async def update_user(
         raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다")
 
     # 사용자 정보 업데이트
-    user.name=name
     user.weight = weight
     user.height = height
     user.gender = gender
