@@ -171,7 +171,7 @@ app = FastAPI()
 origins = ["http://localhost:3000"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -582,6 +582,9 @@ async def submit_join():
     dayTotal_info = db.query(DayTotalSum).order_by(DayTotalSum.id.desc()).first()
     recommended_Intake_info = db.query(Recommended_Intake).order_by(Recommended_Intake.id.desc()).first()
 
+    print("하루합", dayTotal_info.Total_food_carbs)
+    print("추천", recommended_Intake_info.recommended_carbs )
+    
     # 최근 음식 정보로부터 target_values 계산
     target_values = [
     recommended_Intake_info.recommended_carbs - dayTotal_info.Total_food_carbs,
@@ -592,7 +595,7 @@ async def submit_join():
     print(target_values)
 
     # JSON 파일 불러오기
-    json_path = "C:/Users/김성헌/Desktop/fooddetect/FOODDETECT/food.json"
+    json_path =r"C:\Users\HJ\OneDrive - Sejong University\문서\카카오톡 받은 파일\food.json"
     with open(json_path, 'r', encoding='utf-8') as json_file:
         data = json.load(json_file)
 
@@ -602,11 +605,15 @@ async def submit_join():
     # 최적의 음식들 찾기
     sorted_foods = find_optimal_foods(food_list, target_values, weights=[1, 1, 1], num_foods=4)
 
-    # 결과 반환
-    result = {"recommended_foods": []}
-    for food in sorted_foods[:4]:
-        result["recommended_foods"].append({"음식명": food.name})
-
+   # 결과 반환
+    result = []
+    result.append({
+            "name1": sorted_foods[0].name,
+            "name2": sorted_foods[1].name,
+            "name3": sorted_foods[2].name,
+            "name4": sorted_foods[3].name
+        })
+    
     return result
 
 # 음식 유클리드 거리 오름차순 정렬
@@ -731,7 +738,7 @@ async def process_image(file: UploadFile = File(...), flag: str = Query(None)):
 
 def process_ocr(file_path, flag): 
     # Google Vision API 클라이언트 설정 
-    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = r"C:\Users\andyt\OneDrive\바탕 화면\Project\python\OCR\linen-walker-216606-76f54386771c.json" 
+    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = r"C:\Users\HJ\OneDrive - Sejong University\문서\카카오톡 받은 파일\linen-walker-216606-76f54386771c.json"
     client_options = {'api_endpoint': 'eu-vision.googleapis.com'} 
     client = vision.ImageAnnotatorClient(client_options=client_options)  
     # 이미지 파일 읽기 
@@ -835,53 +842,3 @@ class Food:
             return distance
         else:
             return float('inf')
-
-@app.get("/recommended_food/")
-async def submit_join():
-    db = SessionLocal()
-
-    # 가장 최근의 음식 정보를 가져옴
-    dayTotal_info = db.query(DayTotalSum).order_by(DayTotalSum.id.desc()).first()
-    recommended_Intake_info = db.query(Recommended_Intake).order_by(Recommended_Intake.id.desc()).first()
-
-    # 최근 음식 정보로부터 target_values 계산
-    target_values = [
-        recommended_Intake_info.recommended_carbs - dayTotal_info.Total_food_carbs,
-        recommended_Intake_info.recommended_protein - dayTotal_info.Total_food_protein,
-        recommended_Intake_info.recommended_fat - dayTotal_info.Total_food_fat,
-        recommended_Intake_info.recommended_nat - dayTotal_info.Total_food_nat
-    ]
-    print(target_values)
-
-    # JSON 파일 불러오기
-    json_path = "C:/Users/김성헌/Desktop/fooddetect/FOODDETECT/food.json"
-    with open(json_path, 'r', encoding='utf-8') as json_file:
-        data = json.load(json_file)
-
-    # Food 객체로 변환
-    food_list = [Food.from_dict(item) for item in data]
-
-    # 최적의 음식들 찾기
-    sorted_foods = find_optimal_foods(food_list, target_values, weights=[1, 1, 1], num_foods=4)
-
-    # 결과 반환
-    result = {"recommended_foods": []}
-    for food in sorted_foods[:4]:
-        result["recommended_foods"].append({"음식명": food.name})
-
-    return result
-
-# 음식 유클리드 거리 오름차순 정렬
-def find_optimal_foods(food_list, target_values, weights, num_foods=4):
-    # 초기화
-    best_matches = []
-
-    for food in food_list:
-        distance = food.calculate_distance(target_values, weights)
-        food.distance = distance
-        best_matches.append(food)
-
-    # 거리가 작은 순으로 정렬
-    sorted_foods = sorted(best_matches, key=lambda x: x.distance)
-
-    return sorted_foods
