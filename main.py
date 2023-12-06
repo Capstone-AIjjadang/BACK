@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 from google.cloud import vision
 from PIL import Image, ImageFont, ImageDraw
 from typing import List
+from sqlalchemy.ext.asyncio import AsyncSession
 
 import base64
 import requests
@@ -24,6 +25,9 @@ import platform
 import re
 import cv2
 import shutil
+import math
+import aiofiles
+
 
 
 DATABASE_URL = "sqlite:///./test.db"
@@ -123,6 +127,40 @@ class UserJoin(Base):
     medical_history = Column(String)
     
 
+#음식추천
+class Food:
+    def __init__(self, name, weight, energy, carbs, fat, protein, nat):
+        self.name = name
+        self.weight = weight
+        self.energy = energy
+        self.carbs = carbs
+        self.fat = fat
+        self.protein = protein
+        self.nat = nat
+
+    @classmethod
+    def from_dict(cls, item):
+        return cls(
+            name=item['음식명'],
+            weight=item['g'],
+            energy=item['cal'],
+            carbs=item['carbs'],
+            fat=item['fat'],
+            protein=item['protein'],
+            nat=item['nat'],
+        )
+
+    def calculate_distance(self, target_values, weights):
+        if self.nat <= target_values[3]:
+            differences = [
+                self.carbs - target_values[0],
+                self.protein - target_values[1],
+                self.fat - target_values[2],
+            ]
+            distance = math.sqrt(sum(weight * difference**2 for weight, difference in zip(weights, differences)))
+            return distance
+        else:
+            return float('inf')
 
 Base.metadata.create_all(bind=engine)
 
@@ -141,7 +179,13 @@ app.add_middleware(
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-
+# #개인정보 데이터 호출 api
+@app.get("/today_food_info/")
+async def fetch_data():
+    db = SessionLocal()
+    data = db.query(TotalFoodInfo).all()
+    db.close()
+    return data
 
 
 #개인정보 api 
@@ -186,8 +230,43 @@ async def submit_join(
     return response_data
 
 
+async def Upload_image(file):
+    current_directory = os.path.abspath(os.getcwd())
+    directory = os.path.join(current_directory, "temp_images")
 
-    
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
+    unique_filename = f"{timestamp}_{file.filename}"
+    file_location = os.path.join(directory, unique_filename)
+
+    # 파일 비동기적으로 쓰기
+    async with aiofiles.open(file_location, 'wb') as buffer:
+        file_data = await file.read()
+        await buffer.write(file_data)
+
+    # 파일 데이터 동기적으로 읽기 및 데이터베이스에 저장
+    with open(file_location, 'rb') as img_file:
+        img_data = img_file.read()
+
+        db = SessionLocal()
+        try:
+            new_image_record = FImageInfo(
+                food_image_data=img_data
+            )
+            db.add(new_image_record)
+            db.commit()
+            db.refresh(new_image_record)
+        except Exception as e:
+            db.rollback()
+            raise e
+        finally:
+            db.close()
+
+
+
+
 @app.post("/process_foodimage/")
 async def process_image(file: UploadFile = File(...), flag: str = "ALL"):
     timestamp = datetime.now(timezone("Asia/Seoul")).strftime("%Y%m%d%H%M%S%f")[:-3]
@@ -219,36 +298,13 @@ async def process_image(file: UploadFile = File(...), flag: str = "ALL"):
         prediction_top1 = data[0]["region_0"]["prediction_top1"]
 
         save_to_database(prediction_top1)
-        
-    current_directory = os.path.abspath(os.getcwd()) 
-    directory = os.path.join(current_directory, "temp_images") 
 
-    # 디렉토리가 존재하지 않으면 생성 
-    if not os.path.exists(directory): 
-        os.makedirs(directory) 
+    # 파일 스트림을 처음으로 되돌림
+    file.file.seek(0)
 
-    # 파일 저장 위치 설정 
-    file_location = os.path.join(directory, file.filename) 
-    with open(file_location, "wb") as buffer: 
-        shutil.copyfileobj(file.file, buffer) 
-
-    # 파일을 바이너리 형태로 읽기
-    with open(file_location, "rb") as img_file:
-        img_data = img_file.read()
-
-    # 데이터베이스에 이미지 데이터 저장
-    db = SessionLocal()
-    try:
-        new_image_record = OCRImageInfo(
-            text_image_data=img_data
-        )
-        db.add(new_image_record)
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise e
-    finally:
-        db.close()
+    # Upload_image 함수 호출
+    await Upload_image(file)
+    Upload_image(file)
 
 def save_to_database(prediction_top1):
     food_name = prediction_top1.get("food_name", "")
@@ -257,7 +313,6 @@ def save_to_database(prediction_top1):
     food_carbs = prediction_top1.get("food_carbs", 0.0)
     food_protein = prediction_top1.get("food_protein", 0.0)
     food_fat = prediction_top1.get("food_fat", 0.0)
-    
 
     db = SessionLocal()
     db_food_result = FoodImageInfo(
@@ -455,7 +510,6 @@ async def total_food_sum():
             "Total_food_carbs": day_sum.Total_food_carbs,
             "Total_food_protein": day_sum.Total_food_protein,
             "Total_food_fat": day_sum.Total_food_fat,
-        
         },
     }
 
@@ -470,11 +524,19 @@ async def recommended_intake():
     height = user_data.height / 100
     age = user_data.age
     weight = user_data.weight
+    gender=user_data.gender
     
     #남자 활동적 식
-    calo = 662 - (9.53 * age) + 1.25 * ((15.91 * weight) + (539.6 * height))
+    #  calo = 662 - (9.53 * age) + 1.25 * ((15.91 * weight) + (539.6 * height))
 
-    
+    print("User data:", gender)
+    # 성별에 따라 활동적인 식사량 계산
+    if gender == "남자":
+        calo = 662 - (9.53 * age) + 1.25 * ((15.91 * weight) + (539.6 * height))
+    elif gender == "여자":
+        calo = 354 - (6.91 * age) + 1.27 * ((9.36 * weight) + (726 * height))
+    else:
+        return {"message": "올바른 성별 정보가 제공되지 않았습니다."}     
 
     # 각 항목별 총합을 계산
     recommended = Recommended_Intake(
@@ -483,7 +545,6 @@ async def recommended_intake():
     recommended_carbs=calo*0.65/4,
     recommended_protein=calo*0.15/4,
     recommended_fat=calo*0.2/9,
-    
 )
     
     #Reocmmended Intake에 저장
@@ -504,6 +565,7 @@ async def recommended_intake():
 
     return response_data
 
+
 # 먹은양*음식성분 결과 엔드포인트
 @app.get("/list_food_info/")
 async def  fetch_food_image_info():
@@ -511,6 +573,56 @@ async def  fetch_food_image_info():
     data = db.query(TotalFoodInfo).all()
     db.close()
     return data
+
+@app.get("/recommended_food/")
+async def submit_join():
+    db = SessionLocal()
+
+    # 가장 최근의 음식 정보를 가져옴
+    dayTotal_info = db.query(DayTotalSum).order_by(DayTotalSum.id.desc()).first()
+    recommended_Intake_info = db.query(Recommended_Intake).order_by(Recommended_Intake.id.desc()).first()
+
+    # 최근 음식 정보로부터 target_values 계산
+    target_values = [
+    recommended_Intake_info.recommended_carbs - dayTotal_info.Total_food_carbs,
+    recommended_Intake_info.recommended_protein - dayTotal_info.Total_food_protein,
+    recommended_Intake_info.recommended_fat - dayTotal_info.Total_food_fat,
+    recommended_Intake_info.recommended_nat - dayTotal_info.Total_food_nat
+    ]
+    print(target_values)
+
+    # JSON 파일 불러오기
+    json_path = "C:/Users/김성헌/Desktop/fooddetect/FOODDETECT/food.json"
+    with open(json_path, 'r', encoding='utf-8') as json_file:
+        data = json.load(json_file)
+
+    # Food 객체로 변환
+    food_list = [Food.from_dict(item) for item in data]
+
+    # 최적의 음식들 찾기
+    sorted_foods = find_optimal_foods(food_list, target_values, weights=[1, 1, 1], num_foods=4)
+
+    # 결과 반환
+    result = {"recommended_foods": []}
+    for food in sorted_foods[:4]:
+        result["recommended_foods"].append({"음식명": food.name})
+
+    return result
+
+# 음식 유클리드 거리 오름차순 정렬
+def find_optimal_foods(food_list, target_values, weights, num_foods=4):
+    # 초기화
+    best_matches = []
+
+    for food in food_list:
+        distance = food.calculate_distance(target_values, weights)
+        food.distance = distance
+        best_matches.append(food)
+
+    # 거리가 작은 순으로 정렬
+    sorted_foods = sorted(best_matches, key=lambda x: x.distance)
+
+    return sorted_foods
 
 import base64
 
@@ -535,9 +647,9 @@ async def latest_food_image_info():
     try:
         # 가장 최근에 추가된 이미지 가져오기
         latest_image = db.query(FImageInfo).order_by(FImageInfo.id.desc()).first()
-        if latest_image and latest_image.text_image_data:
+        if latest_image and latest_image.food_image_data:
             # 이미지 데이터를 Base64로 인코딩
-            encoded_image = base64.b64encode(latest_image.text_image_data).decode('utf-8')
+            encoded_image = base64.b64encode(latest_image.food_image_data).decode('utf-8')
             return {"image": encoded_image}
         else:
             return {"message": "이미지가 없습니다."}
