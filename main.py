@@ -98,6 +98,14 @@ class OCRImageInfo(Base):
     id = Column(Integer, primary_key=True, index=True)
     text_image_data = Column(LargeBinary)
 
+#음식 인식 사진 저장 테이블
+class FImageInfo(Base):
+    __tablename__ = "image_of_food"
+
+    id = Column(Integer, primary_key=True, index=True)
+    food_image_data = Column(LargeBinary)
+
+
 Base.metadata.create_all(bind=engine)
 #회원정보 테이블 추가
 class UserJoin(Base):
@@ -456,34 +464,34 @@ async def total_food_sum():
 #권장섭취량
 @app.get("/recommended_intake/")
 async def recommended_intake():
-     db = SessionLocal()
-     user_data = db.query(UserJoin).order_by(UserJoin.id.desc()).first()
+    db = SessionLocal()
+    user_data = db.query(UserJoin).order_by(UserJoin.id.desc()).first()
 
-     height = user_data.height / 100
-     age = user_data.age
-     weight = user_data.weight
-     
-     #남자 활동적 식
-     calo = 662 - (9.53 * age) + 1.25 * ((15.91 * weight) + (539.6 * height))
+    height = user_data.height / 100
+    age = user_data.age
+    weight = user_data.weight
+    
+    #남자 활동적 식
+    calo = 662 - (9.53 * age) + 1.25 * ((15.91 * weight) + (539.6 * height))
 
-     
+    
 
     # 각 항목별 총합을 계산
-     recommended = Recommended_Intake(
-     recommended_cal=calo,
-     recommended_nat=2300,
-      recommended_carbs=calo*0.65/4,
-      recommended_protein=calo*0.15/4,
-      recommended_fat=calo*0.2/9,
-     
+    recommended = Recommended_Intake(
+    recommended_cal=calo,
+    recommended_nat=2300,
+    recommended_carbs=calo*0.65/4,
+    recommended_protein=calo*0.15/4,
+    recommended_fat=calo*0.2/9,
+    
 )
     
-      #Reocmmended Intake에 저장
-     db.add(recommended)
-     db.commit()
-     db.refresh(recommended)
+    #Reocmmended Intake에 저장
+    db.add(recommended)
+    db.commit()
+    db.refresh(recommended)
 
-     response_data = {
+    response_data = {
     "message": "데이터가 성공적으로 제출되었습니다.",
     "response_data": {
         "recommended_cal": recommended.recommended_cal,
@@ -494,8 +502,7 @@ async def recommended_intake():
     },
 }
 
-     return response_data
-ata
+    return response_data
 
 # 먹은양*음식성분 결과 엔드포인트
 @app.get("/list_food_info/")
@@ -513,6 +520,21 @@ async def latest_image_info():
     try:
         # 가장 최근에 추가된 이미지 가져오기
         latest_image = db.query(OCRImageInfo).order_by(OCRImageInfo.id.desc()).first()
+        if latest_image and latest_image.text_image_data:
+            # 이미지 데이터를 Base64로 인코딩
+            encoded_image = base64.b64encode(latest_image.text_image_data).decode('utf-8')
+            return {"image": encoded_image}
+        else:
+            return {"message": "이미지가 없습니다."}
+    finally:
+        db.close()
+
+@app.get("/latest_food_image/")
+async def latest_food_image_info():
+    db = SessionLocal()
+    try:
+        # 가장 최근에 추가된 이미지 가져오기
+        latest_image = db.query(FImageInfo).order_by(FImageInfo.id.desc()).first()
         if latest_image and latest_image.text_image_data:
             # 이미지 데이터를 Base64로 인코딩
             encoded_image = base64.b64encode(latest_image.text_image_data).decode('utf-8')
@@ -712,10 +734,10 @@ async def submit_join():
 
     # 최근 음식 정보로부터 target_values 계산
     target_values = [
-       recommended_Intake_info.recommended_carbs - dayTotal_info.Total_food_carbs,
-       recommended_Intake_info.recommended_protein - dayTotal_info.Total_food_protein,
-       recommended_Intake_info.recommended_fat - dayTotal_info.Total_food_fat,
-       recommended_Intake_info.recommended_nat - dayTotal_info.Total_food_nat
+        recommended_Intake_info.recommended_carbs - dayTotal_info.Total_food_carbs,
+        recommended_Intake_info.recommended_protein - dayTotal_info.Total_food_protein,
+        recommended_Intake_info.recommended_fat - dayTotal_info.Total_food_fat,
+        recommended_Intake_info.recommended_nat - dayTotal_info.Total_food_nat
     ]
     print(target_values)
 
@@ -751,6 +773,3 @@ def find_optimal_foods(food_list, target_values, weights, num_foods=4):
     sorted_foods = sorted(best_matches, key=lambda x: x.distance)
 
     return sorted_foods
-   
-
-     
