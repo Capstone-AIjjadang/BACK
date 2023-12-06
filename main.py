@@ -371,7 +371,7 @@ async def submit_join(
 @app.post("/total_text_result/")
 async def submit_join(
     amount_eaten: float = Form(...),
-    name: str =Form(...),
+    name: str = Form(...),
 ):
     db = SessionLocal()
     # 가장 최근의 음식 정보를 가져옴
@@ -380,15 +380,21 @@ async def submit_join(
     if not food_image_info:
         raise HTTPException(status_code=404, detail="음식 정보를 찾을 수 없습니다.")
 
-# TotalFoodInfo에 저장할 데이터 생성
+    # 문자열을 실수로 변환하는 함수
+    def to_float(value):
+        try:
+            return float(value)
+        except ValueError:
+            return 0.0
+
+    # TotalFoodInfo에 저장할 데이터 생성
     total_food_data = TotalFoodInfo(
         Total_food_name=name,
-        Total_food_cal=food_image_info.text_cal * amount_eaten,
-        Total_food_nat=food_image_info.text_nat * amount_eaten,
-        Total_food_carbs=food_image_info.text_carbs * amount_eaten,
-        Total_food_protein=food_image_info.text_protein * amount_eaten,
-        Total_food_fat=food_image_info.text_fat * amount_eaten,
-    
+        Total_food_cal=to_float(food_image_info.text_cal) * amount_eaten,
+        Total_food_nat=to_float(food_image_info.text_nat) * amount_eaten,
+        Total_food_carbs=to_float(food_image_info.text_carbs) * amount_eaten,
+        Total_food_protein=to_float(food_image_info.text_protein) * amount_eaten,
+        Total_food_fat=to_float(food_image_info.text_fat) * amount_eaten,
     )
 
     # TotalFoodInfo 테이블에 저장
@@ -405,11 +411,11 @@ async def submit_join(
             "Total_food_carbs": total_food_data.Total_food_carbs,
             "Total_food_protein": total_food_data.Total_food_protein,
             "Total_food_fat": total_food_data.Total_food_fat,
-            
         },
     }
 
     return response_data
+
 
 ##avc
 
