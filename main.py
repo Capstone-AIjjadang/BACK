@@ -614,3 +614,90 @@ def process_nutrition_info(text):
             numerical_values[key] = float(matches[0])
 
     return numerical_values
+
+class Food:
+    def __init__(self, name, weight, energy, carbs, fat, protein, nat):
+        self.name = name
+        self.weight = weight
+        self.energy = energy
+        self.carbs = carbs
+        self.fat = fat
+        self.protein = protein
+        self.nat = nat
+
+    @classmethod
+    def from_dict(cls, item):
+        return cls(
+            name=item['음식명'],
+            weight=item['g'],
+            energy=item['cal'],
+            carbs=item['carbs'],
+            fat=item['fat'],
+            protein=item['protein'],
+            nat=item['nat'],
+        )
+
+    def calculate_distance(self, target_values, weights):
+        if self.nat <= target_values[3]:
+            differences = [
+                self.carbs - target_values[0],
+                self.protein - target_values[1],
+                self.fat - target_values[2],
+            ]
+            distance = math.sqrt(sum(weight * difference**2 for weight, difference in zip(weights, differences)))
+            return distance
+        else:
+            return float('inf')
+
+@app.get("/recommended_food/")
+async def submit_join():
+    db = SessionLocal()
+
+    # 가장 최근의 음식 정보를 가져옴
+    dayTotal_info = db.query(DayTotalSum).order_by(DayTotalSum.id.desc()).first()
+    recommended_Intake_info = db.query(Recommended_Intake).order_by(Recommended_Intake.id.desc()).first()
+
+    # 최근 음식 정보로부터 target_values 계산
+    target_values = [
+       recommended_Intake_info.recommended_carbs - dayTotal_info.Total_food_carbs,
+       recommended_Intake_info.recommended_protein - dayTotal_info.Total_food_protein,
+       recommended_Intake_info.recommended_fat - dayTotal_info.Total_food_fat,
+       recommended_Intake_info.recommended_nat - dayTotal_info.Total_food_nat
+    ]
+    print(target_values)
+
+    # JSON 파일 불러오기
+    json_path = "C:/Users/김성헌/Desktop/fooddetect/FOODDETECT/food.json"
+    with open(json_path, 'r', encoding='utf-8') as json_file:
+        data = json.load(json_file)
+
+    # Food 객체로 변환
+    food_list = [Food.from_dict(item) for item in data]
+
+    # 최적의 음식들 찾기
+    sorted_foods = find_optimal_foods(food_list, target_values, weights=[1, 1, 1], num_foods=4)
+
+    # 결과 반환
+    result = {"recommended_foods": []}
+    for food in sorted_foods[:4]:
+        result["recommended_foods"].append({"음식명": food.name})
+
+    return result
+
+# 음식 유클리드 거리 오름차순 정렬
+def find_optimal_foods(food_list, target_values, weights, num_foods=4):
+    # 초기화
+    best_matches = []
+
+    for food in food_list:
+        distance = food.calculate_distance(target_values, weights)
+        food.distance = distance
+        best_matches.append(food)
+
+    # 거리가 작은 순으로 정렬
+    sorted_foods = sorted(best_matches, key=lambda x: x.distance)
+
+    return sorted_foods
+   
+
+     
