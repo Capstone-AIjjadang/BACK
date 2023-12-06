@@ -29,19 +29,18 @@ engine = create_engine(DATABASE_URL)
 Base = declarative_base()
 
 
-
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 #권장섭취량 
 class Recommended_Intake(Base):
-     __tablename__ = "recommended_intake"
-     id = Column(Integer, primary_key=True, index=True)
-     recommended_cal = Column(Float)
-     recommended_nat = Column(Float)
-     recommended_carbs = Column(Float)
-     recommended_protein = Column(Float)
-     recommended_fat = Column(Float)
-     
+    __tablename__ = "recommended_intake"
+
+    id = Column(Integer, primary_key=True, index=True)
+    recommended_cal = Column(Float)
+    recommended_nat = Column(Integer)
+    recommended_carbs = Column(Float)
+    recommended_protein = Column(Float)
+    recommended_fat = Column(Float)
     
 
 
@@ -55,20 +54,7 @@ class DayTotalSum(Base):
     Total_food_carbs = Column(Float)
     Total_food_protein = Column(Float)
     Total_food_fat = Column(Float)
-
-
-#성분표 인식 결과 저장 테이블
-class TextImageInfo(Base):
-    __tablename__ = "text_image_info"
-
-    id = Column(Integer, primary_key=True, index=True)
-    text_name = Column(String)
-    text_cal = Column(String)
-    text_nat = Column(String)
-    text_carbs = Column(String)
-    text_protein = Column(String)
-    text_fat = Column(String)
-Base.metadata.create_all(bind=engine)
+   
 
 #음식 *먹은양 통합 데이터베이스
 class TotalFoodInfo(Base):
@@ -81,7 +67,7 @@ class TotalFoodInfo(Base):
     Total_food_carbs = Column(Float)
     Total_food_protein = Column(Float)
     Total_food_fat = Column(Float)
-  
+ 
 
 #음식사진 인식 결과 저장 테이블
 class FoodImageInfo(Base):
@@ -94,7 +80,7 @@ class FoodImageInfo(Base):
     food_carbs = Column(Float)
     food_protein = Column(Float)
     food_fat = Column(Float)
-   
+    
     
 
 
@@ -116,28 +102,13 @@ class UserJoin(Base):
     
 
 
-#개인정보 테이블 추가
-class UserInfo(Base):
-    __tablename__ = "user_info"
-
-    id = Column(Integer, primary_key=True, index=True)
-    age = Column(Integer)
-    weight = Column(Float)
-    height = Column(Float)
-    gender = Column(String)
-    medical_history = Column(Text)
-
-
-
-
-
 Base.metadata.create_all(bind=engine)
 
 
 app = FastAPI()
 
 # CORS 설정
-origins = ["http://localhost:3000"]
+origins = ["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -151,7 +122,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 
-#회원가입
+#개인정보 api 
 @app.post("/user_join/")
 async def submit_join(
     
@@ -192,7 +163,80 @@ async def submit_join(
 
     return response_data
 
-#회원정보 조회
+
+
+    
+@app.post("/process_foodimage/")
+async def process_image(file: UploadFile = File(...), flag: str = "ALL"):
+    timestamp = datetime.now(timezone("Asia/Seoul")).strftime("%Y%m%d%H%M%S%f")[:-3]
+    client_id = "glabs_638c223a818794216d1ba2d03f8f395054565ac1b5bc948c9ff6f392195615be"
+    client_secret = "fb66b6fc7ac25cdd55439205994f85b6729c7f400674c3d1acddd007b003c6e4"
+    client_key = "80aa5a78-3ba6-546f-aefb-3aa7a47dfa77"
+    signature = hmac.new(
+        key=client_secret.encode("UTF-8"),
+        msg=f"{client_id}:{timestamp}".encode("UTF-8"),
+        digestmod=hashlib.sha256,
+    ).hexdigest()
+
+    url = "https://aiapi.genielabs.ai/kt/vision/food"
+    headers = {
+        "Accept": "*/*",
+        "x-client-key": client_key,
+        "x-client-signature": signature,
+        "x-auth-timestamp": timestamp,
+    }
+    fields = {"flag": flag}
+    obj = {"metadata": json.dumps(fields), "media": file.file}
+
+    response = requests.post(url, headers=headers, files=obj)
+
+    if response.ok:
+        json_data = json.loads(response.text)
+        code = json_data["code"]
+        data = json_data["data"]
+        prediction_top1 = data[0]["region_0"]["prediction_top1"]
+
+        save_to_database(prediction_top1)
+
+       
+    
+def save_to_database(prediction_top1):
+    food_name = prediction_top1.get("food_name", "")
+    food_cal = prediction_top1.get("food_cal", 0.0)
+    food_nat = prediction_top1.get("food_nat", 0.0)
+    food_carbs = prediction_top1.get("food_carbs", 0.0)
+    food_protein = prediction_top1.get("food_protein", 0.0)
+    food_fat = prediction_top1.get("food_fat", 0.0)
+    
+
+    db = SessionLocal()
+    db_food_result = FoodImageInfo(
+        food_name=food_name,
+        food_cal=food_cal,
+        food_nat=food_nat,
+        food_carbs=food_carbs,
+        food_protein=food_protein,
+        food_fat=food_fat,
+    )
+    db.add(db_food_result)
+    db.commit()
+    db.refresh(db_food_result)
+    db.close()
+
+    
+   
+
+
+
+# 이미지 처리 결과를 반환하는 API 엔드포인트
+@app.get("/food_image_info/")
+async def  fetch_food_image_info():
+    db = SessionLocal()
+    data = db.query(FoodImageInfo).all()
+    db.close()
+    return data
+
+#개인정보 페이지 정보 엔드포인트
 @app.get("/user_info/")
 async def fetch_user_join():
     db=SessionLocal()
@@ -210,7 +254,7 @@ async def fetch_user_join():
     db.close()
     return user_data
 
-# 회원정보 수정
+# 사용자 정보를 업데이트하는 PUT 엔드포인트
 @app.put("/user_update/")
 async def update_user(
     name: str = Form(...),
@@ -241,106 +285,7 @@ async def update_user(
     return {"message": "사용자 정보가 성공적으로 업데이트되었습니다."}
 
 
-
-
-#음식사진인식AI
-@app.post("/process_foodimage/")
-async def process_image(file: UploadFile = File(...), flag: str = "ALL"):
-   
-   # 현재 시각과 클라이언트 정보를 이용하여 서명 생성
-    timestamp = datetime.now(timezone("Asia/Seoul")).strftime("%Y%m%d%H%M%S%f")[:-3]
-    client_id = "glabs_638c223a818794216d1ba2d03f8f395054565ac1b5bc948c9ff6f392195615be"
-    client_secret = "fb66b6fc7ac25cdd55439205994f85b6729c7f400674c3d1acddd007b003c6e4"
-    client_key = "80aa5a78-3ba6-546f-aefb-3aa7a47dfa77"
-    signature = hmac.new(
-        key=client_secret.encode("UTF-8"),
-        msg=f"{client_id}:{timestamp}".encode("UTF-8"),
-        digestmod=hashlib.sha256,
-    ).hexdigest()
-    # 음식 예측 API 호출을 위한 요청 헤더 및 데이터 설정
-    url = "https://aiapi.genielabs.ai/kt/vision/food"
-    headers = {
-        "Accept": "*/*",
-        "x-client-key": client_key,
-        "x-client-signature": signature,
-        "x-auth-timestamp": timestamp,
-    }
-    fields = {"flag": flag}
-    obj = {"metadata": json.dumps(fields), "media": file.file}
-    # 음식 예측 API 호출
-    response = requests.post(url, headers=headers, files=obj)
-
-  
-    if response.ok:
-        json_data = json.loads(response.text)
-        code = json_data["code"]
-        data = json_data["data"]
-        prediction_top1 = data[0]["region_0"]["prediction_top1"]
-
-        # 결과를 데이터베이스에 저장
-        save_to_database(prediction_top1)
-
-        result = {"code": code, "prediction_top1": prediction_top1}
-
-        # 터미널에 결과 출력
-        print("Code:", code)
-        print("Prediction Top1:", prediction_top1)
-
-        return JSONResponse(content=result, status_code=200)
-    else:
-        error_message = f"Error: {response.status_code} - {response.text}"
-
-        # 터미널에 에러 출력
-        print(error_message)
-
-        return JSONResponse(content={"error": error_message}, status_code=500)
-
-
-def save_to_database(prediction_top1):
-    # Extract relevant information
-    food_name = prediction_top1.get("food_name", "")
-    food_cal = prediction_top1.get("food_cal", 0.0)
-    food_nat = prediction_top1.get("food_nat", 0.0)
-    food_carbs = prediction_top1.get("food_carbs", 0.0)
-    food_protein = prediction_top1.get("food_protein", 0.0)
-    food_fat = prediction_top1.get("food_fat", 0.0)
-    
-  
-    #새로운 데이터베이스 세션 생성
-    db = SessionLocal()
-
-    # 음식 사진 결과 저장하는 데이터베이스 생성 및 저장
-    db_food_result = FoodImageInfo(
-        food_name=food_name,
-        food_cal=food_cal,
-        food_nat=food_nat,
-        food_carbs=food_carbs,
-        food_protein=food_protein,
-        food_fat=food_fat,
-        
-       
-    )
-    db.add(db_food_result)
-    db.commit()
-    db.refresh(db_food_result)
-
-    #데이터 세션 닫기
-    db.close()
-
-
-
-
-# 음식촬영 결과 조회
-@app.get("/food_image_info/")
-async def  fetch_food_image_info():
-    db = SessionLocal()
-    data = db.query(FoodImageInfo).all()
-    db.close()
-    return data
-
-
-
-#음식사진*먹은양→음식 리스트 테이블
+#음식*먹은양 ->새로운 데이터베이스 (음식사진)
 @app.post("/total_food_result/")
 async def submit_join(
     amount_eaten: float = Form(...),
@@ -384,7 +329,7 @@ async def submit_join(
 
     return response_data
 
-#성분표*먹은양→음식 리스트 테이블
+#음식*먹은양 ->새로운 데이터베이스 (ocr )
 @app.post("/total_text_result/")
 async def submit_join(
     amount_eaten: float = Form(...),
@@ -428,7 +373,10 @@ async def submit_join(
 
     return response_data
 
-#하루 총 섭취량 조회
+##avc
+
+##
+#총 섭취량 엔드포인트
 @app.get("/today_sum_food/")
 async def total_food_sum():
      db = SessionLocal()
@@ -437,7 +385,7 @@ async def total_food_sum():
     # 각 항목별 총합을 계산
      day_sum =  DayTotalSum(
         Total_food_cal = sum(food.Total_food_cal for food in data),
-         Total_food_nat= sum(food.Total_fowod_nat for food in data),
+         Total_food_nat= sum(food.Total_food_nat for food in data),
         Total_food_carbs  = sum(food.Total_food_carbs for food in data),
          Total_food_protein  = sum(food.Total_food_protein for food in data),
          Total_food_fat = sum(food.Total_food_fat for food in data),
@@ -462,7 +410,7 @@ async def total_food_sum():
 
      return response_data
 
-#하루 권장 섭취량 조회
+#권장섭취량
 @app.get("/recommended_intake/")
 async def recommended_intake():
      db = SessionLocal()
@@ -473,7 +421,7 @@ async def recommended_intake():
      weight = user_data.weight
      
      #남자 활동적 식
-     calo = 662 - (9.53 * age) + 1.25 * (15.91 * weight + 539.6 * height)
+     calo = 662 - (9.53 * age) + 1.25 * ((15.91 * weight) + (539.6 * height))
 
      
 
@@ -493,27 +441,26 @@ async def recommended_intake():
      db.refresh(recommended)
 
      response_data = {
-        "message": "Data successfully submitted",
-        "response_data": {
-        
-            "Total_food_cal":  recommended.Total_food_cal,
-            "Total_food_nat":  recommended.Total_food_nat,
-            "Total_food_carbs":  recommended.Total_food_carbs,
-            "Total_food_protein":  recommended.Total_food_protein,
-            "Total_food_fat":  recommended.Total_food_fat,
-         
-        },
-      }
+    "message": "데이터가 성공적으로 제출되었습니다.",
+    "response_data": {
+        "recommended_cal": recommended.recommended_cal,
+        "recommended_nat": recommended.recommended_nat,
+        "recommended_carbs": recommended.recommended_carbs,
+        "recommended_protein": recommended.recommended_protein,
+        "recommended_fat": recommended.recommended_fat,
+    },
+}
 
      return response_data
 
-# 음식 리스트 조회
+# 먹은양*음식성분 결과 엔드포인트
 @app.get("/list_food_info/")
 async def  fetch_food_image_info():
     db = SessionLocal()
     data = db.query(TotalFoodInfo).all()
     db.close()
     return data
+
 
 
 # 텍스트 인식 결과 반환
@@ -648,4 +595,4 @@ def process_nutrition_info(text):
 
     return results
 
-     #깃
+     #깃헙
