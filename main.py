@@ -171,7 +171,7 @@ app = FastAPI()
 origins = ["http://localhost:3000"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -645,14 +645,18 @@ async def latest_image_info():
 async def latest_food_image_info():
     db = SessionLocal()
     try:
-        # 가장 최근에 추가된 이미지 가져오기
-        latest_image = db.query(FImageInfo).order_by(FImageInfo.id.desc()).first()
-        if latest_image and latest_image.food_image_data:
-            # 이미지 데이터를 Base64로 인코딩
-            encoded_image = base64.b64encode(latest_image.food_image_data).decode('utf-8')
-            return {"image": encoded_image}
-        else:
-            return {"message": "이미지가 없습니다."}
+        # 데이터베이스에서 모든 이미지 레코드 가져오기
+        all_images = db.query(FImageInfo).all()
+        encoded_images = []
+
+        for image in all_images:
+            if image.food_image_data:
+                encoded_image = base64.b64encode(image.food_image_data).decode('utf-8')
+                encoded_images.append({"id": image.id, "image": encoded_image})
+            else:
+                encoded_images.append({"id": image.id, "image": None})
+
+        return {"images": encoded_images}
     finally:
         db.close()
 
@@ -731,7 +735,7 @@ async def process_image(file: UploadFile = File(...), flag: str = Query(None)):
 
 def process_ocr(file_path, flag): 
     # Google Vision API 클라이언트 설정 
-    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = r"C:\Users\andyt\OneDrive\바탕 화면\Project\python\OCR\linen-walker-216606-76f54386771c.json" 
+    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = r"C:\Users\toong\Documents\카카오톡 받은 파일\linen-walker-216606-76f54386771c.json"
     client_options = {'api_endpoint': 'eu-vision.googleapis.com'} 
     client = vision.ImageAnnotatorClient(client_options=client_options)  
     # 이미지 파일 읽기 
