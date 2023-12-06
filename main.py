@@ -633,18 +633,22 @@ def find_optimal_foods(food_list, target_values, weights, num_foods=4):
 
 import base64
 
-@app.get("/latest_image/")
-async def latest_image_info():
+@app.get("/latest_food_image/")
+async def latest_food_image_info():
     db = SessionLocal()
     try:
-        # 가장 최근에 추가된 이미지 가져오기
-        latest_image = db.query(OCRImageInfo).order_by(OCRImageInfo.id.desc()).first()
-        if latest_image and latest_image.text_image_data:
-            # 이미지 데이터를 Base64로 인코딩
-            encoded_image = base64.b64encode(latest_image.text_image_data).decode('utf-8')
-            return {"image": encoded_image}
-        else:
-            return {"message": "이미지가 없습니다."}
+        # 데이터베이스에서 모든 이미지 레코드 가져오기
+        all_images = db.query(FImageInfo).all()
+        encoded_images = []
+
+        for image in all_images:
+            if image.food_image_data:
+                encoded_image = base64.b64encode(image.food_image_data).decode('utf-8')
+                encoded_images.append({"id": image.id, "image": encoded_image})
+            else:
+                encoded_images.append({"id": image.id, "image": None})
+
+        return {"images": encoded_images}
     finally:
         db.close()
 
