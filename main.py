@@ -1,12 +1,13 @@
-from fastapi import FastAPI, Form,File, UploadFile, HTTPException,Query
-from sqlalchemy import create_engine, Column, Integer, Float, String, Text,LargeBinary,ForeignKey
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker,relationship
+from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, Query, Form
+from sqlalchemy import create_engine, Column, Integer, String, LargeBinary, Float, Text, ForeignKey
+from sqlalchemy.orm import declarative_base, sessionmaker, Session, relationship
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from google.cloud import vision
-from PIL import ImageFont, ImageDraw, Image
+from PIL import Image, ImageFont, ImageDraw
 from typing import List
+
+import base64
 import requests
 import json
 from datetime import datetime
@@ -24,10 +25,10 @@ import re
 import cv2
 import shutil
 
+
 DATABASE_URL = "sqlite:///./test.db"
 engine = create_engine(DATABASE_URL)
 Base = declarative_base()
-
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -120,10 +121,10 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI()
 
 # CORS 설정
-origins = ["*"]
+origins = ["http://localhost:3000"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -209,8 +210,37 @@ async def process_image(file: UploadFile = File(...), flag: str = "ALL"):
         prediction_top1 = data[0]["region_0"]["prediction_top1"]
 
         save_to_database(prediction_top1)
+        
+    current_directory = os.path.abspath(os.getcwd()) 
+    directory = os.path.join(current_directory, "temp_images") 
 
-    
+    # 디렉토리가 존재하지 않으면 생성 
+    if not os.path.exists(directory): 
+        os.makedirs(directory) 
+
+    # 파일 저장 위치 설정 
+    file_location = os.path.join(directory, file.filename) 
+    with open(file_location, "wb") as buffer: 
+        shutil.copyfileobj(file.file, buffer) 
+
+    # 파일을 바이너리 형태로 읽기
+    with open(file_location, "rb") as img_file:
+        img_data = img_file.read()
+
+    # 데이터베이스에 이미지 데이터 저장
+    db = SessionLocal()
+    try:
+        new_image_record = OCRImageInfo(
+            text_image_data=img_data
+        )
+        db.add(new_image_record)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise e
+    finally:
+        db.close()
+
 def save_to_database(prediction_top1):
     food_name = prediction_top1.get("food_name", "")
     food_cal = prediction_top1.get("food_cal", 0.0)
@@ -233,7 +263,6 @@ def save_to_database(prediction_top1):
     db.commit()
     db.refresh(db_food_result)
     db.close()
-
 
 
 
@@ -340,7 +369,7 @@ async def submit_join(
 @app.post("/total_text_result/")
 async def submit_join(
     amount_eaten: float = Form(...),
-    name: str =Form(...),
+    name: str = Form(...),
 ):
     db = SessionLocal()
     # 가장 최근의 음식 정보를 가져옴
@@ -349,15 +378,21 @@ async def submit_join(
     if not food_image_info:
         raise HTTPException(status_code=404, detail="음식 정보를 찾을 수 없습니다.")
 
-# TotalFoodInfo에 저장할 데이터 생성
+    # 문자열을 실수로 변환하는 함수
+    def to_float(value):
+        try:
+            return float(value)
+        except ValueError:
+            return 0.0
+
+    # TotalFoodInfo에 저장할 데이터 생성
     total_food_data = TotalFoodInfo(
         Total_food_name=name,
-        Total_food_cal=food_image_info.text_cal * amount_eaten,
-        Total_food_nat=food_image_info.text_nat * amount_eaten,
-        Total_food_carbs=food_image_info.text_carbs * amount_eaten,
-        Total_food_protein=food_image_info.text_protein * amount_eaten,
-        Total_food_fat=food_image_info.text_fat * amount_eaten,
-    
+        Total_food_cal=to_float(food_image_info.text_cal) * amount_eaten,
+        Total_food_nat=to_float(food_image_info.text_nat) * amount_eaten,
+        Total_food_carbs=to_float(food_image_info.text_carbs) * amount_eaten,
+        Total_food_protein=to_float(food_image_info.text_protein) * amount_eaten,
+        Total_food_fat=to_float(food_image_info.text_fat) * amount_eaten,
     )
 
     # TotalFoodInfo 테이블에 저장
@@ -374,11 +409,11 @@ async def submit_join(
             "Total_food_carbs": total_food_data.Total_food_carbs,
             "Total_food_protein": total_food_data.Total_food_protein,
             "Total_food_fat": total_food_data.Total_food_fat,
-            
         },
     }
 
     return response_data
+
 
 ##avc
 
@@ -447,15 +482,16 @@ async def recommended_intake():
     db.refresh(recommended)
 
     response_data = {
-    "message": "데이터가 성공적으로 제출되었습니다.",
-    "response_data": {
-        "recommended_cal": recommended.recommended_cal,
-        "recommended_nat": recommended.recommended_nat,
-        "recommended_carbs": recommended.recommended_carbs,
-        "recommended_protein": recommended.recommended_protein,
-        "recommended_fat": recommended.recommended_fat,
-    },
-}
+        "message": "Data successfully submitted",
+        "recommended_intake_data": {
+        
+            "Total_food_cal":  recommended.Total_food_cal,
+            "Total_food_nat":  recommended.Total_food_nat,
+            "Total_food_carbs":  recommended.Total_food_carbs,
+            "Total_food_protein":  recommended.Total_food_protein,
+            "Total_food_fat":  recommended.Total_food_fat,
+        },
+    }
 
     return response_data
 
@@ -468,6 +504,21 @@ async def  fetch_food_image_info():
     return data
 
 import base64
+
+@app.get("/latest_image/")
+async def latest_image_info():
+    db = SessionLocal()
+    try:
+        # 가장 최근에 추가된 이미지 가져오기
+        latest_image = db.query(OCRImageInfo).order_by(OCRImageInfo.id.desc()).first()
+        if latest_image and latest_image.text_image_data:
+            # 이미지 데이터를 Base64로 인코딩
+            encoded_image = base64.b64encode(latest_image.text_image_data).decode('utf-8')
+            return {"image": encoded_image}
+        else:
+            return {"message": "이미지가 없습니다."}
+    finally:
+        db.close()
 
 #OCR 결과 반환
 @app.get("/fetch_textimage/")
