@@ -210,8 +210,37 @@ async def process_image(file: UploadFile = File(...), flag: str = "ALL"):
         prediction_top1 = data[0]["region_0"]["prediction_top1"]
 
         save_to_database(prediction_top1)
+        
+    current_directory = os.path.abspath(os.getcwd()) 
+    directory = os.path.join(current_directory, "temp_images") 
 
-    
+    # 디렉토리가 존재하지 않으면 생성 
+    if not os.path.exists(directory): 
+        os.makedirs(directory) 
+
+    # 파일 저장 위치 설정 
+    file_location = os.path.join(directory, file.filename) 
+    with open(file_location, "wb") as buffer: 
+        shutil.copyfileobj(file.file, buffer) 
+
+    # 파일을 바이너리 형태로 읽기
+    with open(file_location, "rb") as img_file:
+        img_data = img_file.read()
+
+    # 데이터베이스에 이미지 데이터 저장
+    db = SessionLocal()
+    try:
+        new_image_record = OCRImageInfo(
+            text_image_data=img_data
+        )
+        db.add(new_image_record)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise e
+    finally:
+        db.close()
+
 def save_to_database(prediction_top1):
     food_name = prediction_top1.get("food_name", "")
     food_cal = prediction_top1.get("food_cal", 0.0)
@@ -471,6 +500,21 @@ async def  fetch_food_image_info():
     return data
 
 import base64
+
+@app.get("/latest_image/")
+async def latest_image_info():
+    db = SessionLocal()
+    try:
+        # 가장 최근에 추가된 이미지 가져오기
+        latest_image = db.query(OCRImageInfo).order_by(OCRImageInfo.id.desc()).first()
+        if latest_image and latest_image.text_image_data:
+            # 이미지 데이터를 Base64로 인코딩
+            encoded_image = base64.b64encode(latest_image.text_image_data).decode('utf-8')
+            return {"image": encoded_image}
+        else:
+            return {"message": "이미지가 없습니다."}
+    finally:
+        db.close()
 
 #OCR 결과 반환
 @app.get("/fetch_textimage/")
