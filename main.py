@@ -42,6 +42,7 @@ class Recommended_Intake(Base):
     recommended_carbs = Column(Float)
     recommended_protein = Column(Float)
     recommended_fat = Column(Float)
+    
 
 #일일동안 먹은 총 섭취 영양소(현재 섭취량)
 class DayTotalSum(Base):
@@ -455,45 +456,46 @@ async def total_food_sum():
 #권장섭취량
 @app.get("/recommended_intake/")
 async def recommended_intake():
-    db = SessionLocal()
-    user_data = db.query(UserJoin).order_by(UserJoin.id.desc()).first()
+     db = SessionLocal()
+     user_data = db.query(UserJoin).order_by(UserJoin.id.desc()).first()
 
-    height = user_data.height / 100
-    age = user_data.age
-    weight = user_data.weight
-    
-    #남자 활동적 식
-    calo = 662 - (9.53 * age) + 1.25 * ((15.91 * weight) + (539.6 * height))
+     height = user_data.height / 100
+     age = user_data.age
+     weight = user_data.weight
+     
+     #남자 활동적 식
+     calo = 662 - (9.53 * age) + 1.25 * ((15.91 * weight) + (539.6 * height))
 
-    
+     
 
     # 각 항목별 총합을 계산
-    recommended = Recommended_Intake(
-    recommended_cal=calo,
-    recommended_nat=2300,
-    recommended_carbs=calo*0.65/4,
-    recommended_protein=calo*0.15/4,
-    recommended_fat=calo*0.2/9,
+     recommended = Recommended_Intake(
+     recommended_cal=calo,
+     recommended_nat=2300,
+      recommended_carbs=calo*0.65/4,
+      recommended_protein=calo*0.15/4,
+      recommended_fat=calo*0.2/9,
+     
 )
     
-    #Reocmmended Intake에 저장
-    db.add(recommended)
-    db.commit()
-    db.refresh(recommended)
+      #Reocmmended Intake에 저장
+     db.add(recommended)
+     db.commit()
+     db.refresh(recommended)
 
-    response_data = {
-        "message": "Data successfully submitted",
-        "recommended_intake_data": {
-        
-            "Total_food_cal":  recommended.Total_food_cal,
-            "Total_food_nat":  recommended.Total_food_nat,
-            "Total_food_carbs":  recommended.Total_food_carbs,
-            "Total_food_protein":  recommended.Total_food_protein,
-            "Total_food_fat":  recommended.Total_food_fat,
-        },
-    }
+     response_data = {
+    "message": "데이터가 성공적으로 제출되었습니다.",
+    "response_data": {
+        "recommended_cal": recommended.recommended_cal,
+        "recommended_nat": recommended.recommended_nat,
+        "recommended_carbs": recommended.recommended_carbs,
+        "recommended_protein": recommended.recommended_protein,
+        "recommended_fat": recommended.recommended_fat,
+    },
+}
 
-    return response_data
+     return response_data
+ata
 
 # 먹은양*음식성분 결과 엔드포인트
 @app.get("/list_food_info/")
